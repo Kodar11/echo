@@ -6,19 +6,21 @@ export function isDev(): boolean {
   return process.env.NODE_ENV === 'development';
 }
 
-export function ipcMainHandle<Key extends keyof EventPayloadMapping>(
+export function ipcMainHandle<Key extends keyof EventPayloadInputMapping>(
   key: Key,
-  handler: () => EventPayloadMapping[Key]
+  handler: (
+    input: EventPayloadInputMapping[Key]
+  ) => Promise<EventPayloadOutputMapping[Key]> | EventPayloadOutputMapping[Key]
 ) {
-  ipcMain.handle(key, (event) => {
+  ipcMain.handle(key, (event, input) => {
     validateEventFrame(event.senderFrame);
-    return handler();
+    return handler(input);
   });
 }
 
-export function ipcMainOn<Key extends keyof EventPayloadMapping>(
+export function ipcMainOn<Key extends keyof EventPayloadInputMapping>(
   key: Key,
-  handler: (payload: EventPayloadMapping[Key]) => void
+  handler: (payload: EventPayloadInputMapping[Key]) => void
 ) {
   ipcMain.on(key, (event, payload) => {
     validateEventFrame(event.senderFrame);
@@ -26,10 +28,10 @@ export function ipcMainOn<Key extends keyof EventPayloadMapping>(
   });
 }
 
-export function ipcWebContentsSend<Key extends keyof EventPayloadMapping>(
+export function ipcWebContentsSend<Key extends keyof EventPayloadInputMapping>(
   key: Key,
   webContents: WebContents,
-  payload: EventPayloadMapping[Key]
+  payload: EventPayloadInputMapping[Key]
 ) {
   webContents.send(key, payload);
 }

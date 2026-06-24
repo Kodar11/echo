@@ -1,7 +1,8 @@
 {
-  "appId": "com.n-ziermann.electron-course",
+  "appId": "com.echo.desktop",
+  "productName": "Echo",
   "files": ["dist-electron", "dist-react"],
-  "extraResources": ["dist-electron/preload.cjs", "src/assets/**"],
+  "extraResources": ["dist-electron/electron/preload.cjs"],
   "icon": "./desktopIcon.png",
   "mac": {
     "target": "dmg"

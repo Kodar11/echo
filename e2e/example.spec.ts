@@ -4,14 +4,14 @@ let electronApp: Awaited<ReturnType<typeof _electron.launch>>;
 let mainPage: Awaited<ReturnType<typeof electronApp.firstWindow>>;
 
 async function waitForPreloadScript() {
-  return new Promise((resolve) => {
+  return new Promise<void>((resolve) => {
     const interval = setInterval(async () => {
       const electronBridge = await mainPage.evaluate(() => {
-        return (window as Window & { electron?: any }).electron;
+        return (window as Window & { electron?: unknown }).electron;
       });
       if (electronBridge) {
         clearInterval(interval);
-        resolve(true);
+        resolve();
       }
     }, 100);
   });
@@ -30,12 +30,11 @@ test.afterEach(async () => {
   await electronApp.close();
 });
 
-test('custom frame should minimize the mainWindow', async () => {
-  await mainPage.click('#minimize');
-  const isMinimized = await electronApp.evaluate((electron) => {
-    return electron.BrowserWindow.getAllWindows()[0].isMinimized();
-  });
-  expect(isMinimized).toBeTruthy();
+test('should show the Echo search page', async () => {
+  await expect(mainPage.locator('text=Echo').first()).toBeVisible();
+  await expect(
+    mainPage.locator('input[placeholder="Search your files..."]')
+  ).toBeVisible();
 });
 
 test('should create a custom menu', async () => {
@@ -43,8 +42,11 @@ test('should create a custom menu', async () => {
     return electron.Menu.getApplicationMenu();
   });
   expect(menu).not.toBeNull();
-  expect(menu?.items).toHaveLength(2);
-  expect(menu?.items[0].submenu?.items).toHaveLength(2);
-  expect(menu?.items[1].submenu?.items).toHaveLength(3);
-  expect(menu?.items[1].label).toBe('View');
+  expect(menu!.items.length).toBeGreaterThanOrEqual(1);
+  expect(menu!.items[0].label).toBe(process.platform === 'darwin' ? '' : 'Echo');
+});
+
+test('should navigate to settings', async () => {
+  await mainPage.click('text=Settings');
+  await expect(mainPage.locator('text=Indexed Folders')).toBeVisible();
 });

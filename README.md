@@ -1,16 +1,65 @@
-# Electron Course
+# Echo
 
-This is the example code from the following freeCodeCamp course: <ToBeDefined></ToBeDefined>
+Echo is a desktop search engine built with Electron, React, TypeScript, Vite, Tailwind CSS, Zustand, and SQLite.
 
-It tackles setting up an electron app that displays system resource usages for your CPU, RAM and File-System
-- using react and typescript
-- with typesafe IPC communication
-- with a hide-to-tray functionality
-- with a custom menu-bar
-- with a custom window-frame
+It indexes your local files and lets you search them instantly. Echo owns its search stack: positional inverted index, trie-based autocomplete, BM25 ranking, phrase search, prefix search, fuzzy search, and highlighted snippets.
 
-It's tested using both E2E- (Playwright) and Unit-Tests (Vitest)
+## Features
 
-If you find run into any errors please post them as an issue in this Repository.
+- Index local folders recursively
+- Extract text from `.txt`, `.md`, `.pdf`, `.docx`, and `.html`
+- SQLite-backed positional inverted index
+- Trie-based autocomplete
+- BM25 ranking with phrase-match boosting
+- Phrase, prefix, and fuzzy (Levenshtein) search
+- Live search results with highlighted snippets
+- Open files with the default OS application
 
-Have a nice day :)
+## Project structure
+
+```
+src/
+  electron/        # Electron main process
+  database/        # SQLite schema and repositories
+  indexer/         # File crawler, extractors, tokenizer, indexer
+  search/          # Search engine: trie, BM25, phrase/prefix/fuzzy search
+  file-extractors/ # Text extraction for supported formats
+  ipc/             # IPC channel constants
+  renderer/        # React UI
+    pages/
+    components/
+    stores/
+```
+
+## Scripts
+
+```bash
+# Install dependencies and rebuild native modules
+npm install
+
+# Run the app in development mode
+npm run dev
+
+# Build for production
+npm run build
+npm run transpile:electron
+
+# Run tests
+npm run test:unit
+npm run test:e2e
+
+# Rebuild native modules manually (if needed)
+npm run rebuild:native
+```
+
+## Milestone 1 scope
+
+This release focuses on the core search experience:
+
+- Folder management and manual indexing
+- Recursive indexing of supported file types
+- Positional inverted index in SQLite
+- Trie, BM25, phrase, prefix, and fuzzy search
+- Search-first UI with autocomplete and snippets
+
+File watchers, background indexing, incremental indexing, search history, analytics, cloud sync, authentication, and AI features are intentionally excluded for Milestone 1 but the architecture is designed to support them later.

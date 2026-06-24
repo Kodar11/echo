@@ -1,36 +1,40 @@
 const electron = require('electron');
 
 electron.contextBridge.exposeInMainWorld('electron', {
-  subscribeStatistics: (callback) =>
-    ipcOn('statistics', (stats) => {
-      callback(stats);
-    }),
-  subscribeChangeView: (callback) =>
-    ipcOn('changeView', (view) => {
-      callback(view);
-    }),
-  getStaticData: () => ipcInvoke('getStaticData'),
+  addFolder: (input) => ipcInvoke('addFolder', input),
+  removeFolder: (input) => ipcInvoke('removeFolder', input),
+  getFolders: () => ipcInvoke('getFolders'),
+  setFolderEnabled: (input) => ipcInvoke('setFolderEnabled', input),
+  startIndexing: () => ipcInvoke('startIndexing'),
+  getIndexingStatus: () => ipcInvoke('getIndexingStatus'),
+  subscribeIndexingProgress: (callback) =>
+    ipcOn('indexingProgress', (progress) => callback(progress)),
+  search: (input) => ipcInvoke('search', input),
+  getAutocompleteSuggestions: (input) =>
+    ipcInvoke('getAutocompleteSuggestions', input),
+  openFile: (input) => ipcInvoke('openFile', input),
   sendFrameAction: (payload) => ipcSend('sendFrameAction', payload),
 } satisfies Window['electron']);
 
-function ipcInvoke<Key extends keyof EventPayloadMapping>(
-  key: Key
-): Promise<EventPayloadMapping[Key]> {
-  return electron.ipcRenderer.invoke(key);
+function ipcInvoke<Key extends keyof EventPayloadInputMapping>(
+  key: Key,
+  input?: EventPayloadInputMapping[Key]
+): Promise<EventPayloadOutputMapping[Key]> {
+  return electron.ipcRenderer.invoke(key, input);
 }
 
-function ipcOn<Key extends keyof EventPayloadMapping>(
+function ipcOn<Key extends keyof EventPayloadInputMapping>(
   key: Key,
-  callback: (payload: EventPayloadMapping[Key]) => void
+  callback: (payload: EventPayloadOutputMapping[Key]) => void
 ) {
   const cb = (_: Electron.IpcRendererEvent, payload: any) => callback(payload);
   electron.ipcRenderer.on(key, cb);
   return () => electron.ipcRenderer.off(key, cb);
 }
 
-function ipcSend<Key extends keyof EventPayloadMapping>(
+function ipcSend<Key extends keyof EventPayloadInputMapping>(
   key: Key,
-  payload: EventPayloadMapping[Key]
+  payload: EventPayloadInputMapping[Key]
 ) {
   electron.ipcRenderer.send(key, payload);
 }

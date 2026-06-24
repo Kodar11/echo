@@ -1,11 +1,11 @@
 import { BrowserWindow, Menu, app } from 'electron';
-import { ipcWebContentsSend, isDev } from './util.js';
+import { isDev } from './util.js';
 
 export function createMenu(mainWindow: BrowserWindow) {
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       {
-        label: process.platform === 'darwin' ? undefined : 'App',
+        label: process.platform === 'darwin' ? undefined : 'Echo',
         type: 'submenu',
         submenu: [
           {
@@ -16,31 +16,6 @@ export function createMenu(mainWindow: BrowserWindow) {
             label: 'DevTools',
             click: () => mainWindow.webContents.openDevTools(),
             visible: isDev(),
-          },
-        ],
-      },
-      {
-        label: 'View',
-        type: 'submenu',
-        submenu: [
-          {
-            label: 'CPU',
-            click: () =>
-              ipcWebContentsSend('changeView', mainWindow.webContents, 'CPU'),
-          },
-          {
-            label: 'RAM',
-            click: () =>
-              ipcWebContentsSend('changeView', mainWindow.webContents, 'RAM'),
-          },
-          {
-            label: 'STORAGE',
-            click: () =>
-              ipcWebContentsSend(
-                'changeView',
-                mainWindow.webContents,
-                'STORAGE'
-              ),
           },
         ],
       },
