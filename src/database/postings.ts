@@ -56,3 +56,8 @@ export function deletePostingsForFile(fileId: number): void {
   const db = getDatabase();
   db.prepare('DELETE FROM Postings WHERE file_id = ?').run(fileId);
 }
+
+export function deleteAllPostings(): void {
+  const db = getDatabase();
+  db.prepare('DELETE FROM Postings').run();
+}

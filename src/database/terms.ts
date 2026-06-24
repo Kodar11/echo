@@ -39,6 +39,19 @@ export function getAllTerms(): TermRecord[] {
   return db.prepare('SELECT * FROM Terms').all() as TermRecord[];
 }
 
+export function getTermCount(): number {
+  const db = getDatabase();
+  const row = db.prepare('SELECT COUNT(*) as count FROM Terms').get() as {
+    count: number;
+  };
+  return row.count;
+}
+
+export function deleteAllTerms(): void {
+  const db = getDatabase();
+  db.prepare('DELETE FROM Terms').run();
+}
+
 export function incrementDocumentFrequency(termId: number): void {
   const db = getDatabase();
   db.prepare(

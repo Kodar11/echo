@@ -4,6 +4,29 @@ type IndexedFolder = {
   enabled: number;
 };
 
+type IndexStatus = 'never_indexed' | 'indexing' | 'indexed' | 'error';
+
+type IndexState = {
+  status: IndexStatus;
+  currentFile: string | null;
+  processed: number;
+  total: number;
+  indexedFiles: number;
+  error: string | null;
+};
+
+type IndexStatistics = {
+  status: IndexStatus;
+  totalIndexedFiles: number;
+  totalIndexedFolders: number;
+  totalUniqueTerms: number;
+  lastIndexedAt: number | null;
+  lastIndexDurationMs: number | null;
+  averageIndexDurationMs: number | null;
+  databaseSizeBytes: number;
+  totalIndexingRuns: number;
+};
+
 type IndexingProgress = {
   status: 'idle' | 'running' | 'completed' | 'error';
   currentFile?: string;
@@ -35,6 +58,9 @@ type EventPayloadInputMapping = {
   startIndexing: void;
   getIndexingStatus: void;
   indexingProgress: IndexingProgress;
+  getIndexStatus: void;
+  getIndexStatistics: void;
+  deleteIndex: void;
   search: { query: string };
   getAutocompleteSuggestions: { prefix: string };
   openFile: { path: string };
@@ -49,6 +75,9 @@ type EventPayloadOutputMapping = {
   startIndexing: void;
   getIndexingStatus: IndexingProgress;
   indexingProgress: IndexingProgress;
+  getIndexStatus: IndexState;
+  getIndexStatistics: IndexStatistics;
+  deleteIndex: void;
   search: SearchResult[];
   getAutocompleteSuggestions: string[];
   openFile: void;
@@ -71,6 +100,9 @@ interface Window {
     subscribeIndexingProgress: (
       callback: (progress: IndexingProgress) => void
     ) => UnsubscribeFunction;
+    getIndexStatus: () => Promise<IndexState>;
+    getIndexStatistics: () => Promise<IndexStatistics>;
+    deleteIndex: () => Promise<void>;
     search: (input: { query: string }) => Promise<SearchResult[]>;
     getAutocompleteSuggestions: (input: {
       prefix: string;

@@ -31,22 +31,29 @@ test.afterEach(async () => {
 });
 
 test('should show the Echo search page', async () => {
-  await expect(mainPage.locator('text=Echo').first()).toBeVisible();
   await expect(
     mainPage.locator('input[placeholder="Search your files..."]')
   ).toBeVisible();
 });
 
-test('should create a custom menu', async () => {
+test('should create a native menu', async () => {
   const menu = await electronApp.evaluate((electron) => {
     return electron.Menu.getApplicationMenu();
   });
   expect(menu).not.toBeNull();
-  expect(menu!.items.length).toBeGreaterThanOrEqual(1);
-  expect(menu!.items[0].label).toBe(process.platform === 'darwin' ? '' : 'Echo');
 });
 
-test('should navigate to settings', async () => {
-  await mainPage.click('text=Settings');
-  await expect(mainPage.locator('text=Indexed Folders')).toBeVisible();
+test('should navigate through sidebar pages', async () => {
+  await mainPage.getByText('Folders', { exact: true }).click();
+  await expect(
+    mainPage.locator('input[placeholder="Enter folder path..."]')
+  ).toBeVisible();
+
+  await mainPage.getByText('Statistics', { exact: true }).click();
+  await expect(mainPage.getByText('Overview')).toBeVisible();
+
+  await mainPage.getByText('Settings', { exact: true }).click();
+  await expect(
+    mainPage.getByRole('heading', { name: 'Appearance' })
+  ).toBeVisible();
 });

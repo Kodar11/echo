@@ -57,6 +57,11 @@ export function deleteFileByPath(path: string): void {
   db.prepare('DELETE FROM Files WHERE id = ?').run(file.id);
 }
 
+export function deleteAllFiles(): void {
+  const db = getDatabase();
+  db.prepare('DELETE FROM Files').run();
+}
+
 export function deleteFilesNotIn(paths: Set<string>): number {
   const db = getDatabase();
   const allFiles = getAllFiles();

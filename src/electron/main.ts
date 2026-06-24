@@ -10,21 +10,20 @@ import {
   removeFolder,
   setFolderEnabled,
 } from '../database/folders.js';
-import { indexerProgress, startIndexing } from '../indexer/indexer.js';
+import { indexerProgress } from '../indexer/indexer.js';
+import { indexManager } from '../indexer/IndexManager.js';
 import { IPC_CHANNELS } from '../ipc/channels.js';
 import { searchEngine } from '../search/engine.js';
 
 app.on('ready', () => {
   const mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 800,
+    width: 1280,
+    height: 840,
+    minWidth: 900,
     minHeight: 600,
     webPreferences: {
       preload: getPreloadPath(),
     },
-    frame: false,
-    titleBarStyle: 'hidden',
   });
 
   if (isDev()) {
@@ -33,7 +32,7 @@ app.on('ready', () => {
     mainWindow.loadFile(getUIPath());
   }
 
-  searchEngine.rebuildIndex();
+  indexManager.initialize();
 
   // Forward indexing progress to renderer
   indexerProgress.subscribe((progress) => {
@@ -44,9 +43,7 @@ app.on('ready', () => {
   });
 
   setupIpcHandlers();
-
   createMenu(mainWindow);
-  handleCloseEvents(mainWindow);
 });
 
 function setupIpcHandlers() {
@@ -80,12 +77,25 @@ function setupIpcHandlers() {
   });
 
   ipcMainHandle(IPC_CHANNELS.START_INDEXING, async () => {
-    await startIndexing();
+    await indexManager.startIndexing();
     return undefined;
   });
 
   ipcMainHandle(IPC_CHANNELS.GET_INDEXING_STATUS, () => {
     return indexerProgress.getProgress();
+  });
+
+  ipcMainHandle(IPC_CHANNELS.GET_INDEX_STATUS, () => {
+    return indexManager.getStatus();
+  });
+
+  ipcMainHandle(IPC_CHANNELS.GET_INDEX_STATISTICS, () => {
+    return indexManager.getStatistics();
+  });
+
+  ipcMainHandle(IPC_CHANNELS.DELETE_INDEX, () => {
+    indexManager.deleteIndex();
+    return undefined;
   });
 
   ipcMainHandle(IPC_CHANNELS.SEARCH, async ({ query }) => {
@@ -122,28 +132,5 @@ function setupIpcHandlers() {
         mainWindow.minimize();
         break;
     }
-  });
-}
-
-function handleCloseEvents(mainWindow: BrowserWindow) {
-  let willClose = false;
-
-  mainWindow.on('close', (e) => {
-    if (willClose) {
-      return;
-    }
-    e.preventDefault();
-    mainWindow.hide();
-    if (app.dock) {
-      app.dock.hide();
-    }
-  });
-
-  app.on('before-quit', () => {
-    willClose = true;
-  });
-
-  mainWindow.on('show', () => {
-    willClose = false;
   });
 }

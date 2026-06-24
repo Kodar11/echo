@@ -1,141 +1,77 @@
-import { useEffect, useRef } from 'react';
-import { useFoldersStore } from '../stores/foldersStore.js';
-import { useIndexStore } from '../stores/indexStore.js';
+import { Info, Monitor, Moon, Sun } from 'lucide-react';
+import {
+  type ThemePreference,
+  useThemeStore,
+} from '../stores/themeStore.js';
 
 export function SettingsPage() {
-  const { folders, isLoading, loadFolders, addFolder, removeFolder, setEnabled } =
-    useFoldersStore();
-  const { progress, startIndexing, loadStatus, setProgress } = useIndexStore();
-  const inputRef = useRef<HTMLInputElement>(null);
+  const preference = useThemeStore((state) => state.preference);
+  const setPreference = useThemeStore((state) => state.setPreference);
 
-  useEffect(() => {
-    loadFolders();
-    loadStatus();
-
-    const unsubscribe = window.electron.subscribeIndexingProgress((progress) => {
-      setProgress(progress);
-    });
-    return () => unsubscribe();
-  }, [loadFolders, loadStatus, setProgress]);
-
-  const handleAddFolder = async () => {
-    const path = inputRef.current?.value.trim();
-    if (!path) return;
-    await addFolder(path);
-    if (inputRef.current) inputRef.current.value = '';
-  };
-
-  const progressPercent =
-    progress.total > 0
-      ? Math.round((progress.processed / progress.total) * 100)
-      : 0;
+  const options: { value: ThemePreference; label: string; icon: typeof Sun }[] =
+    [
+      { value: 'light', label: 'Light', icon: Sun },
+      { value: 'dark', label: 'Dark', icon: Moon },
+      { value: 'system', label: 'System', icon: Monitor },
+    ];
 
   return (
-    <div className="mx-auto w-full max-w-3xl px-6 pt-12">
-      <h2 className="mb-6 text-2xl font-semibold theme-text">Settings</h2>
+    <div className="flex h-full flex-col overflow-y-auto px-8 py-6">
+      <div className="mx-auto w-full max-w-2xl space-y-6">
+        <section className="rounded-xl bg-(--surface) p-5">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-(--panel) theme-text-secondary">
+              <Monitor size={16} strokeWidth={1.6} />
+            </div>
+            <div>
+              <h2 className="text-sm font-medium theme-text">Appearance</h2>
+              <p className="text-xs theme-text-secondary">
+                Choose your preferred color scheme
+              </p>
+            </div>
+          </div>
 
-      <section className="rounded-2xl border border-(--border) bg-(--surface) p-6 shadow-sm">
-        <h3 className="mb-4 text-lg font-medium theme-text">Indexed Folders</h3>
-
-        <div className="flex gap-2">
-          <input
-            ref={inputRef}
-            type="text"
-            placeholder="Enter folder path..."
-            className="flex-1 rounded-xl border border-(--border) bg-(--bg) px-4 py-2.5 text-sm theme-text outline-none placeholder:text-(--muted) focus:border-(--muted)"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleAddFolder();
-            }}
-          />
-          <button
-            onClick={handleAddFolder}
-            className="rounded-xl bg-(--button) px-4 py-2.5 text-sm font-medium theme-text transition hover:bg-(--button-hover)"
-          >
-            Add Folder
-          </button>
-        </div>
-
-        <div className="mt-4 space-y-2">
-          {isLoading && folders.length === 0 && (
-            <p className="text-sm theme-muted">Loading folders…</p>
-          )}
-          {folders.length === 0 && !isLoading && (
-            <p className="text-sm theme-muted">
-              No folders indexed yet. Add one above.
-            </p>
-          )}
-          {folders.map((folder) => (
-            <div
-              key={folder.id}
-              className="flex items-center justify-between gap-3 rounded-xl bg-(--bg) px-4 py-3"
-            >
-              <span className="min-w-0 flex-1 truncate text-sm theme-text">
-                {folder.path}
-              </span>
-              <div className="flex items-center gap-2">
+          <div className="mt-4 grid grid-cols-3 gap-2">
+            {options.map((option) => {
+              const Icon = option.icon;
+              const isActive = preference === option.value;
+              return (
                 <button
-                  onClick={() => setEnabled(folder.id, folder.enabled === 0)}
-                  className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${
-                    folder.enabled
-                      ? 'bg-emerald-500/20 text-emerald-400'
-                      : 'bg-(--button) text-(--muted)'
+                  key={option.value}
+                  onClick={() => setPreference(option.value)}
+                  className={`flex flex-col items-center gap-2 rounded-xl border px-3 py-3 text-sm font-medium transition ${
+                    isActive
+                      ? 'border-(--accent) bg-(--accent-soft) text-(--accent)'
+                      : 'border-(--border) bg-(--panel) theme-text-secondary hover:theme-text'
                   }`}
                 >
-                  {folder.enabled ? 'Enabled' : 'Disabled'}
+                  <Icon size={18} strokeWidth={1.6} />
+                  {option.label}
                 </button>
-                <button
-                  onClick={() => removeFolder(folder.id)}
-                  className="rounded-lg bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-400 transition hover:bg-red-500/20"
-                >
-                  Remove
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="mt-6 rounded-2xl border border-(--border) bg-(--surface) p-6 shadow-sm">
-        <h3 className="mb-4 text-lg font-medium theme-text">Indexing</h3>
-
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <p className="text-sm theme-text">
-              {progress.status === 'running'
-                ? `Indexing ${progress.currentFile ?? 'files…'}`
-                : progress.status === 'completed'
-                  ? 'Indexing completed'
-                  : progress.status === 'error'
-                    ? `Error: ${progress.error}`
-                    : 'Ready to index'}
-            </p>
-            <p className="mt-0.5 text-xs theme-muted">
-              {progress.indexedFiles} files indexed
-            </p>
+              );
+            })}
           </div>
-          <button
-            onClick={() => startIndexing()}
-            disabled={progress.status === 'running'}
-            className="rounded-xl bg-(--button) px-5 py-2.5 text-sm font-medium theme-text transition hover:bg-(--button-hover) disabled:opacity-50"
-          >
-            {progress.status === 'running' ? 'Indexing…' : 'Index Now'}
-          </button>
-        </div>
+        </section>
 
-        {progress.status === 'running' && progress.total > 0 && (
-          <div className="mt-4">
-            <div className="h-2 w-full overflow-hidden rounded-full bg-(--bg)">
-              <div
-                className="h-full rounded-full bg-emerald-400 transition-all"
-                style={{ width: `${progressPercent}%` }}
-              />
+        <section className="rounded-xl bg-(--surface) p-5">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-(--panel) theme-text-secondary">
+              <Info size={16} strokeWidth={1.6} />
             </div>
-            <p className="mt-1 text-right text-xs theme-muted">
-              {progress.processed} / {progress.total} ({progressPercent}%)
-            </p>
+            <div>
+              <h2 className="text-sm font-medium theme-text">About Echo</h2>
+              <p className="text-xs theme-text-secondary">
+                Version 0.2.0 — Milestone 2
+              </p>
+            </div>
           </div>
-        )}
-      </section>
+          <p className="mt-4 text-xs leading-relaxed theme-text-secondary">
+            Echo is a local desktop search engine. Your files are indexed and
+            stored entirely on this device. No data is sent to external
+            services.
+          </p>
+        </section>
+      </div>
     </div>
   );
 }

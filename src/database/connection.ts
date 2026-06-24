@@ -16,6 +16,7 @@ export function setDatabasePath(dbPath: string): void {
 }
 
 export function getDatabasePath(): string {
+  if (overridePath) return overridePath;
   const userData = getUserDataPath();
   const dbDir = path.join(userData, 'echo');
   if (!fs.existsSync(dbDir)) {

@@ -9,6 +9,9 @@ electron.contextBridge.exposeInMainWorld('electron', {
   getIndexingStatus: () => ipcInvoke('getIndexingStatus'),
   subscribeIndexingProgress: (callback) =>
     ipcOn('indexingProgress', (progress) => callback(progress)),
+  getIndexStatus: () => ipcInvoke('getIndexStatus'),
+  getIndexStatistics: () => ipcInvoke('getIndexStatistics'),
+  deleteIndex: () => ipcInvoke('deleteIndex'),
   search: (input) => ipcInvoke('search', input),
   getAutocompleteSuggestions: (input) =>
     ipcInvoke('getAutocompleteSuggestions', input),

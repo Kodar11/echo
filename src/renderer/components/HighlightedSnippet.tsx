@@ -7,19 +7,22 @@ export function HighlightedSnippet({ snippet, terms }: HighlightedSnippetProps) 
   if (!snippet) return <span className="italic opacity-50">No preview</span>;
   if (terms.length === 0) return <span>{snippet}</span>;
 
-  const escaped = terms
+  const escapedTerms = terms
     .filter((t) => t.length > 0)
     .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  const pattern = new RegExp(`(${escaped.join('|')})`, 'gi');
+
+  if (escapedTerms.length === 0) return <span>{snippet}</span>;
+
+  const pattern = new RegExp(`(${escapedTerms.join('|')})`, 'gi');
   const parts = snippet.split(pattern);
 
   return (
     <span>
       {parts.map((part, i) =>
-        escaped.some((t) => new RegExp(`^${t}$`, 'i').test(part)) ? (
+        escapedTerms.some((t) => new RegExp(`^${t}$`, 'i').test(part)) ? (
           <mark
             key={i}
-            className="rounded bg-amber-400/20 px-0.5 text-amber-200"
+            className="rounded bg-(--accent-soft) px-0.5 font-medium text-(--accent)"
           >
             {part}
           </mark>
