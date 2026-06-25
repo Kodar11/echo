@@ -45,9 +45,21 @@ type SearchResult = {
   size: number;
   modifiedTime: number;
   score: number;
-  snippet: string;
+  snippets: string[];
   matchedTerms: string[];
+  phraseTerms: string[];
   phraseMatch: boolean;
+};
+
+type SearchOptions = {
+  query: string;
+  folderIds?: number[];
+};
+
+type SearchResponse = {
+  results: SearchResult[];
+  totalCount: number;
+  durationMs: number;
 };
 
 type FrameWindowAction = 'CLOSE' | 'MAXIMIZE' | 'MINIMIZE';
@@ -69,7 +81,7 @@ type EventPayloadInputMapping = {
   getIndexStatus: void;
   getIndexStatistics: void;
   deleteIndex: void;
-  search: { query: string };
+  search: SearchOptions;
   getAutocompleteSuggestions: { prefix: string };
   openFile: { path: string };
   openContainingFolder: { path: string };
@@ -91,7 +103,7 @@ type EventPayloadOutputMapping = {
   getIndexStatus: IndexState;
   getIndexStatistics: IndexStatistics;
   deleteIndex: void;
-  search: SearchResult[];
+  search: SearchResponse;
   getAutocompleteSuggestions: string[];
   openFile: void;
   openContainingFolder: void;
@@ -121,7 +133,7 @@ interface Window {
     getIndexStatus: () => Promise<IndexState>;
     getIndexStatistics: () => Promise<IndexStatistics>;
     deleteIndex: () => Promise<void>;
-    search: (input: { query: string }) => Promise<SearchResult[]>;
+    search: (input: SearchOptions) => Promise<SearchResponse>;
     getAutocompleteSuggestions: (input: {
       prefix: string;
     }) => Promise<string[]>;

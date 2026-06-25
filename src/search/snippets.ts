@@ -1,73 +1,127 @@
 import { getExtractor } from '../file-extractors/registry.js';
-import { tokenize } from '../indexer/tokenizer.js';
 
-const SNIPPET_LENGTH = 160;
-const CONTEXT_RADIUS = 60;
+const MAX_SNIPPETS = 3;
+const SNIPPET_WINDOW = 80;
+const MERGE_DISTANCE = 200;
 
-export async function generateSnippet(
+export interface Snippet {
+  text: string;
+  start: number;
+  end: number;
+}
+
+export async function generateSnippets(
   filePath: string,
   matchedTerms: string[],
   phraseMatchPositions?: number[]
-): Promise<string> {
+): Promise<Snippet[]> {
   const extractor = getExtractor(filePath);
-  if (!extractor) return '';
+  if (!extractor) return [];
 
   let text: string;
   try {
     text = await extractor.extract(filePath);
   } catch {
-    return '';
+    return [];
   }
 
-  if (!text) return '';
+  if (!text) return [];
 
-  const { tokens } = tokenize(text);
-  if (tokens.length === 0) return text.slice(0, SNIPPET_LENGTH);
+  const normalizedTerms = matchedTerms.map((t) => t.toLowerCase());
+  const positions = findMatchPositions(text, normalizedTerms, phraseMatchPositions);
 
-  // Find best token position to center snippet around
-  let bestTokenIndex = -1;
+  if (positions.length === 0) {
+    return [truncateSnippet(text, 0, SNIPPET_WINDOW * 2)];
+  }
 
+  const clusters = clusterPositions(positions);
+  const snippets: Snippet[] = [];
+
+  for (const cluster of clusters.slice(0, MAX_SNIPPETS)) {
+    const center = cluster[Math.floor(cluster.length / 2)];
+    const start = Math.max(0, center - SNIPPET_WINDOW);
+    const end = Math.min(text.length, center + SNIPPET_WINDOW);
+    snippets.push(createSnippet(text, start, end));
+  }
+
+  return snippets;
+}
+
+function findMatchPositions(
+  text: string,
+  matchedTerms: string[],
+  phraseMatchPositions?: number[]
+): number[] {
+  const positions: number[] = [];
+  const tokenPositions = getTokenPositions(text);
+
+  // Add positions for individual matched terms.
+  for (const { token, start } of tokenPositions) {
+    if (matchedTerms.includes(token)) {
+      positions.push(start);
+    }
+  }
+
+  // Add positions for phrase matches.
   if (phraseMatchPositions && phraseMatchPositions.length > 0) {
-    bestTokenIndex = phraseMatchPositions[0];
-  } else {
-    for (let i = 0; i < tokens.length; i++) {
-      if (matchedTerms.includes(tokens[i])) {
-        bestTokenIndex = i;
-        break;
+    for (const tokenIndex of phraseMatchPositions) {
+      const tokenPos = tokenPositions[tokenIndex];
+      if (tokenPos) {
+        positions.push(tokenPos.start);
       }
     }
   }
 
-  if (bestTokenIndex === -1) {
-    return text.slice(0, SNIPPET_LENGTH);
-  }
-
-  // Map token index back to character position
-  const token = tokens[bestTokenIndex];
-  const charIndex = text.toLowerCase().indexOf(token);
-  if (charIndex === -1) {
-    return text.slice(0, SNIPPET_LENGTH);
-  }
-
-  const start = Math.max(0, charIndex - CONTEXT_RADIUS);
-  const end = Math.min(text.length, charIndex + CONTEXT_RADIUS);
-  let snippet = text.slice(start, end).replace(/\s+/g, ' ').trim();
-
-  if (start > 0) snippet = '…' + snippet;
-  if (end < text.length) snippet = snippet + '…';
-
-  return snippet;
+  return [...new Set(positions)].sort((a, b) => a - b);
 }
 
-export function highlightSnippet(snippet: string, terms: string[]): string {
-  let highlighted = snippet;
-  const escapedTerms = terms
-    .filter((t) => t.length > 0)
-    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+function getTokenPositions(text: string): { token: string; start: number }[] {
+  const regex = /[a-z0-9]+/gi;
+  const positions: { token: string; start: number }[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    positions.push({ token: match[0].toLowerCase(), start: match.index });
+  }
+  return positions;
+}
 
-  if (escapedTerms.length === 0) return snippet;
+function clusterPositions(positions: number[]): number[][] {
+  if (positions.length === 0) return [];
 
-  const pattern = new RegExp(`(${escapedTerms.join('|')})`, 'gi');
-  highlighted = highlighted.replace(pattern, '<mark>$1</mark>');
-  return highlighted;
+  const clusters: number[][] = [[positions[0]]];
+  for (let i = 1; i < positions.length; i++) {
+    const current = positions[i];
+    const lastCluster = clusters[clusters.length - 1];
+    if (current - lastCluster[lastCluster.length - 1] <= MERGE_DISTANCE) {
+      lastCluster.push(current);
+    } else {
+      clusters.push([current]);
+    }
+  }
+
+  return clusters;
+}
+
+function createSnippet(text: string, start: number, end: number): Snippet {
+  // Expand to word boundaries.
+  let adjustedStart = start;
+  let adjustedEnd = end;
+
+  while (adjustedStart > 0 && /\S/.test(text[adjustedStart - 1])) {
+    adjustedStart--;
+  }
+  while (adjustedEnd < text.length && /\S/.test(text[adjustedEnd])) {
+    adjustedEnd++;
+  }
+
+  let snippetText = text.slice(adjustedStart, adjustedEnd).replace(/\s+/g, ' ').trim();
+
+  if (adjustedStart > 0) snippetText = '…' + snippetText;
+  if (adjustedEnd < text.length) snippetText = snippetText + '…';
+
+  return { text: snippetText, start: adjustedStart, end: adjustedEnd };
+}
+
+function truncateSnippet(text: string, start: number, length: number): Snippet {
+  return createSnippet(text, start, Math.min(text.length, start + length));
 }

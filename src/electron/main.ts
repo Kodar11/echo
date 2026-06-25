@@ -118,8 +118,8 @@ function setupIpcHandlers() {
     return undefined;
   });
 
-  ipcMainHandle(IPC_CHANNELS.SEARCH, async ({ query }) => {
-    return searchEngine.search(query);
+  ipcMainHandle(IPC_CHANNELS.SEARCH, async (options) => {
+    return searchEngine.search(options);
   });
 
   ipcMainHandle(IPC_CHANNELS.GET_AUTOCOMPLETE_SUGGESTIONS, ({ prefix }) => {
