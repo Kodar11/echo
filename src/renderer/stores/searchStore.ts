@@ -9,6 +9,7 @@ interface SearchState {
   search: (query: string) => Promise<void>;
   fetchSuggestions: (prefix: string) => Promise<void>;
   openFile: (path: string) => Promise<void>;
+  openContainingFolder: (path: string) => Promise<void>;
 }
 
 let searchTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -57,5 +58,8 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   },
   openFile: async (path) => {
     await window.electron.openFile({ path });
+  },
+  openContainingFolder: async (path) => {
+    await window.electron.openContainingFolder({ path });
   },
 }));

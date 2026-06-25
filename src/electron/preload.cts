@@ -6,6 +6,7 @@ electron.contextBridge.exposeInMainWorld('electron', {
   getFolders: () => ipcInvoke('getFolders'),
   setFolderEnabled: (input) => ipcInvoke('setFolderEnabled', input),
   startIndexing: () => ipcInvoke('startIndexing'),
+  stopIndexing: () => ipcInvoke('stopIndexing'),
   getIndexingStatus: () => ipcInvoke('getIndexingStatus'),
   subscribeIndexingProgress: (callback) =>
     ipcOn('indexingProgress', (progress) => callback(progress)),
@@ -16,6 +17,10 @@ electron.contextBridge.exposeInMainWorld('electron', {
   getAutocompleteSuggestions: (input) =>
     ipcInvoke('getAutocompleteSuggestions', input),
   openFile: (input) => ipcInvoke('openFile', input),
+  openContainingFolder: (input) => ipcInvoke('openContainingFolder', input),
+  selectFolder: () => ipcInvoke('selectFolder'),
+  getSettings: () => ipcInvoke('getSettings'),
+  setSetting: (input) => ipcInvoke('setSetting', input),
   sendFrameAction: (payload) => ipcSend('sendFrameAction', payload),
 } satisfies Window['electron']);
 

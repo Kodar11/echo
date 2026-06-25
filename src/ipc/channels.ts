@@ -4,6 +4,7 @@ export const IPC_CHANNELS = {
   GET_FOLDERS: 'getFolders',
   SET_FOLDER_ENABLED: 'setFolderEnabled',
   START_INDEXING: 'startIndexing',
+  STOP_INDEXING: 'stopIndexing',
   GET_INDEXING_STATUS: 'getIndexingStatus',
   INDEXING_PROGRESS: 'indexingProgress',
   GET_INDEX_STATUS: 'getIndexStatus',
@@ -12,5 +13,9 @@ export const IPC_CHANNELS = {
   SEARCH: 'search',
   GET_AUTOCOMPLETE_SUGGESTIONS: 'getAutocompleteSuggestions',
   OPEN_FILE: 'openFile',
+  OPEN_CONTAINING_FOLDER: 'openContainingFolder',
+  SELECT_FOLDER: 'selectFolder',
+  GET_SETTINGS: 'getSettings',
+  SET_SETTING: 'setSetting',
   SEND_FRAME_ACTION: 'sendFrameAction',
 } as const;

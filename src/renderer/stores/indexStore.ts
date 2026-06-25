@@ -7,6 +7,7 @@ interface IndexStoreState {
   loadStatus: () => Promise<void>;
   loadStatistics: () => Promise<void>;
   startIndexing: () => Promise<void>;
+  stopIndexing: () => Promise<void>;
   deleteIndex: () => Promise<void>;
   loadProgress: () => Promise<void>;
   setProgress: (progress: IndexingProgress) => void;
@@ -18,6 +19,7 @@ const initialStatus: IndexState = {
   processed: 0,
   total: 0,
   indexedFiles: 0,
+  queueLength: 0,
   error: null,
 };
 
@@ -57,6 +59,11 @@ export const useIndexStore = create<IndexStoreState>((set, get) => ({
     await get().loadStatus();
     await get().loadStatistics();
   },
+  stopIndexing: async () => {
+    await window.electron.stopIndexing();
+    await get().loadStatus();
+    await get().loadStatistics();
+  },
   deleteIndex: async () => {
     await window.electron.deleteIndex();
     await get().loadStatus();
@@ -68,8 +75,10 @@ export const useIndexStore = create<IndexStoreState>((set, get) => ({
   },
   setProgress: (progress) => {
     set({ progress });
-    if (progress.status === 'completed' || progress.status === 'error') {
-      get().loadStatus();
+    // Keep the live status (current file, processed/total, queue length) in sync
+    // with every progress tick so the UI updates smoothly.
+    get().loadStatus();
+    if (progress.status === 'idle' || progress.status === 'error') {
       get().loadStatistics();
     }
   },

@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS IndexingRuns (
   error_message TEXT
 );
 
+CREATE TABLE IF NOT EXISTS Settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_terms_term ON Terms(term);
 CREATE INDEX IF NOT EXISTS idx_postings_term_id ON Postings(term_id);
 CREATE INDEX IF NOT EXISTS idx_postings_file_id ON Postings(file_id);

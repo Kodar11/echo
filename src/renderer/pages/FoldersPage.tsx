@@ -1,5 +1,11 @@
-import { useEffect, useRef } from 'react';
-import { FolderOpen, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { useEffect } from 'react';
+import {
+  FolderOpen,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Trash2,
+} from 'lucide-react';
 import { useFoldersStore } from '../stores/foldersStore.js';
 import { useIndexStore } from '../stores/indexStore.js';
 import { EmptyState } from '../components/EmptyState.js';
@@ -9,57 +15,82 @@ export function FoldersPage() {
   const {
     folders,
     loadFolders,
-    addFolder,
+    selectFolder,
     removeFolder,
     setEnabled,
   } = useFoldersStore();
-  const { startIndexing, status } = useIndexStore();
-  const inputRef = useRef<HTMLInputElement>(null);
+  const { startIndexing, stopIndexing, status } = useIndexStore();
 
   useEffect(() => {
     loadFolders();
   }, [loadFolders]);
 
-  const handleAddFolder = async () => {
-    const folderPath = inputRef.current?.value.trim();
-    if (!folderPath) return;
-    await addFolder(folderPath);
-    if (inputRef.current) inputRef.current.value = '';
-  };
+  const isIndexing = status.status === 'indexing';
 
   return (
     <div className="flex h-full flex-col overflow-y-auto px-8 py-6">
       <div className="mx-auto w-full max-w-2xl">
         <div className="flex items-center gap-2">
-          <input
-            ref={inputRef}
-            type="text"
-            placeholder="Enter folder path..."
-            className="flex-1 rounded-xl border border-(--border-strong) bg-(--surface) px-4 py-2.5 text-sm theme-text outline-none transition placeholder:text-(--text-tertiary) focus:border-(--accent) focus:ring-[3px] focus:ring-(--ring)"
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') handleAddFolder();
-            }}
-          />
           <button
-            onClick={handleAddFolder}
-            className="inline-flex items-center gap-1.5 rounded-xl border border-(--border-strong) bg-(--surface) px-4 py-2.5 text-sm font-medium theme-text transition hover:bg-(--panel)"
+            onClick={selectFolder}
+            disabled={isIndexing}
+            className="inline-flex flex-1 items-center gap-2 rounded-xl border border-(--border-strong) bg-(--surface) px-4 py-2.5 text-left text-sm theme-text transition hover:bg-(--panel) disabled:opacity-50"
           >
-            <Plus size={15} strokeWidth={1.8} />
-            Add
+            <FolderOpen size={16} strokeWidth={1.8} className="theme-text-tertiary" />
+            <span className="theme-text-tertiary">Browse for a folder...</span>
           </button>
-          <button
-            onClick={() => startIndexing()}
-            disabled={status.status === 'indexing'}
-            className="inline-flex items-center gap-1.5 rounded-xl bg-(--accent) px-4 py-2.5 text-sm font-medium text-white transition hover:bg-(--accent-hover) disabled:opacity-50 dark:text-black"
-          >
-            <RefreshCw
-              size={14}
-              strokeWidth={1.8}
-              className={status.status === 'indexing' ? 'animate-spin' : ''}
-            />
-            {status.status === 'indexing' ? 'Indexing…' : 'Index Now'}
-          </button>
+          {isIndexing ? (
+            <button
+              onClick={() => stopIndexing()}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-(--danger) px-4 py-2.5 text-sm font-medium text-white transition hover:opacity-90"
+            >
+              <RefreshCw
+                size={14}
+                strokeWidth={1.8}
+                className="animate-spin"
+              />
+              Stop
+            </button>
+          ) : (
+            <button
+              onClick={() => startIndexing()}
+              className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-(--accent) px-4 py-2.5 text-sm font-medium text-white transition hover:bg-(--accent-hover) dark:text-black"
+            >
+              <RefreshCw size={14} strokeWidth={1.8} />
+              Index Now
+            </button>
+          )}
         </div>
+
+        {isIndexing && status.total > 0 && (
+          <div className="mt-4 rounded-xl border border-(--border) bg-(--surface) p-3">
+            <div className="flex items-center justify-between text-xs">
+              <span className="theme-text-secondary">
+                {status.currentFile
+                  ? `Indexing ${getBasename(status.currentFile)}`
+                  : 'Scanning folders...'}
+              </span>
+              <span className="font-medium theme-text">
+                {status.processed} / {status.total}
+              </span>
+            </div>
+            <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-(--border-strong)">
+              <div
+                className="h-full rounded-full bg-(--accent) transition-all"
+                style={{
+                  width: `${status.total > 0 ? (status.processed / status.total) * 100 : 0}%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
+
+        {status.queueLength > 0 && !isIndexing && (
+          <div className="mt-4 flex items-center gap-2 text-xs theme-text-secondary">
+            <Loader2 size={12} className="animate-spin" />
+            {status.queueLength} file{status.queueLength === 1 ? '' : 's'} pending
+          </div>
+        )}
 
         <div className="mt-8 space-y-2">
           {folders.length === 0 && (

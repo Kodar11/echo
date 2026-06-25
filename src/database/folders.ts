@@ -22,6 +22,13 @@ export function removeFolder(id: number): void {
   db.prepare('DELETE FROM IndexedFolders WHERE id = ?').run(id);
 }
 
+export function getFolderById(id: number): FolderRecord | undefined {
+  const db = getDatabase();
+  return db.prepare('SELECT * FROM IndexedFolders WHERE id = ?').get(id) as
+    | FolderRecord
+    | undefined;
+}
+
 export function getFolders(): FolderRecord[] {
   const db = getDatabase();
   return db.prepare('SELECT * FROM IndexedFolders').all() as FolderRecord[];

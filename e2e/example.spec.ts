@@ -46,7 +46,7 @@ test('should create a native menu', async () => {
 test('should navigate through sidebar pages', async () => {
   await mainPage.getByText('Folders', { exact: true }).click();
   await expect(
-    mainPage.locator('input[placeholder="Enter folder path..."]')
+    mainPage.getByText('Browse for a folder...')
   ).toBeVisible();
 
   await mainPage.getByText('Statistics', { exact: true }).click();

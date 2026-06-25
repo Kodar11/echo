@@ -12,6 +12,7 @@ type IndexState = {
   processed: number;
   total: number;
   indexedFiles: number;
+  queueLength: number;
   error: string | null;
 };
 
@@ -33,6 +34,7 @@ type IndexingProgress = {
   processed: number;
   total: number;
   indexedFiles: number;
+  pendingTasks?: number;
   error?: string;
 };
 
@@ -50,12 +52,18 @@ type SearchResult = {
 
 type FrameWindowAction = 'CLOSE' | 'MAXIMIZE' | 'MINIMIZE';
 
+type AppSettings = {
+  autoSyncOnStartup: boolean;
+  enableWatchers: boolean;
+};
+
 type EventPayloadInputMapping = {
   addFolder: { path: string };
   removeFolder: { id: number };
   getFolders: void;
   setFolderEnabled: { id: number; enabled: boolean };
   startIndexing: void;
+  stopIndexing: void;
   getIndexingStatus: void;
   indexingProgress: IndexingProgress;
   getIndexStatus: void;
@@ -64,6 +72,10 @@ type EventPayloadInputMapping = {
   search: { query: string };
   getAutocompleteSuggestions: { prefix: string };
   openFile: { path: string };
+  openContainingFolder: { path: string };
+  selectFolder: void;
+  getSettings: void;
+  setSetting: { key: keyof AppSettings; value: boolean };
   sendFrameAction: FrameWindowAction;
 };
 
@@ -73,6 +85,7 @@ type EventPayloadOutputMapping = {
   getFolders: IndexedFolder[];
   setFolderEnabled: IndexedFolder;
   startIndexing: void;
+  stopIndexing: void;
   getIndexingStatus: IndexingProgress;
   indexingProgress: IndexingProgress;
   getIndexStatus: IndexState;
@@ -81,6 +94,10 @@ type EventPayloadOutputMapping = {
   search: SearchResult[];
   getAutocompleteSuggestions: string[];
   openFile: void;
+  openContainingFolder: void;
+  selectFolder: string | null;
+  getSettings: AppSettings;
+  setSetting: AppSettings;
   sendFrameAction: void;
 };
 
@@ -96,6 +113,7 @@ interface Window {
       enabled: boolean;
     }) => Promise<IndexedFolder>;
     startIndexing: () => Promise<void>;
+    stopIndexing: () => Promise<void>;
     getIndexingStatus: () => Promise<IndexingProgress>;
     subscribeIndexingProgress: (
       callback: (progress: IndexingProgress) => void
@@ -108,6 +126,13 @@ interface Window {
       prefix: string;
     }) => Promise<string[]>;
     openFile: (input: { path: string }) => Promise<void>;
+    openContainingFolder: (input: { path: string }) => Promise<void>;
+    selectFolder: () => Promise<string | null>;
+    getSettings: () => Promise<AppSettings>;
+    setSetting: (input: {
+      key: keyof AppSettings;
+      value: boolean;
+    }) => Promise<AppSettings>;
     sendFrameAction: (payload: FrameWindowAction) => void;
   };
 }

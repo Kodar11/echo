@@ -5,3 +5,4 @@ export * from './postings.js';
 export * from './folders.js';
 export * from './indexMetadata.js';
 export * from './indexingRuns.js';
+export * from './settings.js';

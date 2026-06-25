@@ -1,8 +1,10 @@
 import fs from 'fs';
+import path from 'path';
 import { getDatabasePath } from '../database/connection.js';
 import {
   deleteAllFiles,
   getFileCount,
+  getFilePathsByPrefix,
 } from '../database/files.js';
 import { getFolders } from '../database/folders.js';
 import {
@@ -17,9 +19,16 @@ import {
   startIndexingRun,
 } from '../database/indexingRuns.js';
 import { deleteAllPostings } from '../database/postings.js';
+import { getBooleanSetting, setBooleanSetting } from '../database/settings.js';
 import { deleteAllTerms, getTermCount } from '../database/terms.js';
 import { searchEngine } from '../search/engine.js';
-import { indexerProgress, startIndexing } from './indexer.js';
+import {
+  IndexQueue,
+  type IndexQueueProgress,
+  type ProgressCallback,
+} from './IndexQueue.js';
+import { SyncManager } from './SyncManager.js';
+import { WatcherManager } from './WatcherManager.js';
 
 export type IndexStatus =
   | 'never_indexed'
@@ -45,22 +54,54 @@ export interface IndexState {
   processed: number;
   total: number;
   indexedFiles: number;
+  queueLength: number;
   error: string | null;
 }
 
-const AVERAGE_WINDOW_SIZE = 20;
+const SETTINGS_KEYS = {
+  autoSyncOnStartup: 'auto_sync_on_startup',
+  enableWatchers: 'enable_watchers',
+};
 
 export class IndexManager {
+  private queue: IndexQueue;
+  private syncManager: SyncManager;
+  private watcherManager: WatcherManager;
   private currentRunId: number | null = null;
   private runStartTime = 0;
+  private manualRunInProgress = false;
+  private engineNeedsRebuild = false;
+  private lastRebuildTime = 0;
+  private watchersStarted = false;
+  private unsubscribeQueue?: () => void;
 
   constructor() {
-    this.handleProgress = this.handleProgress.bind(this);
+    this.queue = new IndexQueue({
+      onIdle: () => this.handleQueueIdle(),
+    });
+    this.syncManager = new SyncManager(this.queue);
+    this.watcherManager = new WatcherManager(this.queue, this.syncManager);
   }
 
   initialize(): void {
     this.ensureMetadata();
     this.loadIndex();
+    this.unsubscribeQueue = this.queue.subscribe((progress) => {
+      this.handleQueueProgress(progress);
+    });
+
+    if (this.getAutoSyncOnStartup() && this.shouldRunStartupSync()) {
+      this.runStartupSync();
+    } else {
+      if (this.getEnableWatchers()) {
+        this.startWatchers();
+      }
+    }
+  }
+
+  dispose(): void {
+    this.unsubscribeQueue?.();
+    this.watcherManager.stop();
   }
 
   ensureMetadata(): void {
@@ -71,58 +112,61 @@ export class IndexManager {
     const metadata = getIndexMetadata();
     const fileCount = getFileCount();
 
+    searchEngine.rebuildIndex();
+    this.lastRebuildTime = Date.now();
+
     if (fileCount === 0) {
       if (metadata.status !== 'indexing' && metadata.status !== 'error') {
         setIndexingStatus('never_indexed');
       }
-      searchEngine.rebuildIndex();
       return;
     }
 
-    searchEngine.rebuildIndex();
     if (metadata.status !== 'indexing' && metadata.status !== 'error') {
       setIndexingStatus('indexed');
     }
   }
 
   async startIndexing(): Promise<void> {
-    const metadata = getIndexMetadata();
-    if (metadata.status === 'indexing') return;
+    if (this.manualRunInProgress) return;
 
+    this.stopWatchers();
     this.runStartTime = Date.now();
     this.currentRunId = startIndexingRun();
+    this.manualRunInProgress = true;
     setIndexingStatus('indexing');
 
-    const unsubscribe = indexerProgress.subscribe(this.handleProgress);
+    await this.syncManager.sync({ trigger: 'manual' });
+  }
 
-    try {
-      await startIndexing();
+  stopIndexing(): void {
+    this.queue.clear();
+    this.watcherManager.stop();
+
+    if (this.manualRunInProgress && this.currentRunId !== null) {
       const duration = Date.now() - this.runStartTime;
-      const fileCount = getFileCount();
-      const termCount = getTermCount();
+      failIndexingRun(this.currentRunId, duration, 'Cancelled by user');
+    }
 
-      completeIndexingRun(this.currentRunId, duration, fileCount);
-      recordIndexingCompleted(duration, fileCount, termCount);
-      searchEngine.rebuildIndex();
-    } catch (err) {
-      const duration = Date.now() - this.runStartTime;
-      const message = err instanceof Error ? err.message : String(err);
+    this.manualRunInProgress = false;
+    this.currentRunId = null;
+    this.engineNeedsRebuild = true;
 
-      if (this.currentRunId !== null) {
-        failIndexingRun(this.currentRunId, duration, message);
-      }
-      setIndexingStatus('error', message);
-    } finally {
-      unsubscribe();
-      this.currentRunId = null;
+    setIndexingStatus('indexed');
+    this.rebuildSearchEngineIfNeeded(true);
+
+    if (this.getEnableWatchers()) {
+      this.startWatchers();
     }
   }
 
-  rebuildIndex(): Promise<void> {
-    return this.startIndexing();
-  }
-
   deleteIndex(): void {
+    this.stopWatchers();
+    this.queue.clear();
+    this.manualRunInProgress = false;
+    this.currentRunId = null;
+    this.engineNeedsRebuild = false;
+
     deleteAllPostings();
     deleteAllFiles();
     deleteAllTerms();
@@ -132,7 +176,7 @@ export class IndexManager {
 
   getStatus(): IndexState {
     const metadata = getIndexMetadata();
-    const progress = indexerProgress.getProgress();
+    const progress = this.queue.getProgress();
 
     return {
       status: metadata.status,
@@ -140,8 +184,17 @@ export class IndexManager {
       processed: progress.processed,
       total: progress.total,
       indexedFiles: getFileCount(),
+      queueLength: progress.pendingTasks,
       error: metadata.error_message ?? null,
     };
+  }
+
+  subscribeToProgress(callback: ProgressCallback): () => void {
+    return this.queue.subscribe(callback);
+  }
+
+  getQueueProgress(): IndexQueueProgress {
+    return this.queue.getProgress();
   }
 
   getStatistics(): IndexStatistics {
@@ -167,15 +220,145 @@ export class IndexManager {
     };
   }
 
-  private handleProgress(progress: IndexingProgress): void {
-    if (progress.status === 'error') {
+  removeFolderFiles(folderPath: string): void {
+    const prefix = folderPath.endsWith(path.sep)
+      ? folderPath
+      : `${folderPath}${path.sep}`;
+    const files = getFilePathsByPrefix(prefix);
+    if (files.length === 0) return;
+
+    this.queue.enqueueMany(files.map((filePath) => ({
+      type: 'delete' as const,
+      path: filePath,
+    })));
+  }
+
+  restartWatchers(): void {
+    if (this.getEnableWatchers()) {
+      this.startWatchers();
+    }
+  }
+
+  getAutoSyncOnStartup(): boolean {
+    return getBooleanSetting(
+      SETTINGS_KEYS.autoSyncOnStartup,
+      true // default: enabled
+    );
+  }
+
+  setAutoSyncOnStartup(enabled: boolean): void {
+    setBooleanSetting(SETTINGS_KEYS.autoSyncOnStartup, enabled);
+  }
+
+  getEnableWatchers(): boolean {
+    return getBooleanSetting(
+      SETTINGS_KEYS.enableWatchers,
+      true // default: enabled
+    );
+  }
+
+  setEnableWatchers(enabled: boolean): void {
+    setBooleanSetting(SETTINGS_KEYS.enableWatchers, enabled);
+    if (enabled) {
+      this.startWatchers();
+    } else {
+      this.stopWatchers();
+    }
+  }
+
+  private shouldRunStartupSync(): boolean {
+    const metadata = getIndexMetadata();
+    if (metadata.status === 'indexing') return false;
+    if (getFolders().length === 0) return false;
+    if (getFileCount() === 0) return false;
+    return true;
+  }
+
+  private runStartupSync(): void {
+    // Defer startup sync slightly so the UI finishes loading.
+    setTimeout(() => {
+      this.syncManager.sync({ trigger: 'startup' }).catch((err) => {
+        console.error('Startup sync failed:', err);
+        setIndexingStatus('indexed');
+        this.engineNeedsRebuild = true;
+        this.rebuildSearchEngineIfNeeded(true);
+        if (this.getEnableWatchers() && !this.watchersStarted) {
+          this.startWatchers();
+        }
+      });
+    }, 1000);
+  }
+
+  private startWatchers(): void {
+    if (this.manualRunInProgress) return;
+    this.watchersStarted = true;
+    this.watcherManager.start(getFolders());
+  }
+
+  private stopWatchers(): void {
+    this.watchersStarted = false;
+    this.watcherManager.stop();
+  }
+
+  private handleQueueProgress(progress: IndexQueueProgress): void {
+    if (progress.status === 'running') {
+      setIndexingStatus('indexing');
+    } else if (progress.status === 'error') {
       const duration = Date.now() - this.runStartTime;
       const message = progress.error ?? 'Unknown error';
-      if (this.currentRunId !== null) {
+      if (this.currentRunId !== null && this.manualRunInProgress) {
         failIndexingRun(this.currentRunId, duration, message);
       }
       setIndexingStatus('error', message);
+      this.manualRunInProgress = false;
+      this.currentRunId = null;
+
+      this.engineNeedsRebuild = true;
+      this.rebuildSearchEngineIfNeeded(true);
+
+      if (this.getEnableWatchers() && !this.watchersStarted) {
+        this.startWatchers();
+      }
     }
+  }
+
+  private handleQueueIdle(): void {
+    const wasManualRun = this.manualRunInProgress;
+
+    if (this.manualRunInProgress && this.currentRunId !== null) {
+      const duration = Date.now() - this.runStartTime;
+      const fileCount = getFileCount();
+      const termCount = getTermCount();
+
+      completeIndexingRun(this.currentRunId, duration, fileCount);
+      recordIndexingCompleted(duration, fileCount, termCount);
+      this.manualRunInProgress = false;
+      this.currentRunId = null;
+    }
+
+    // Mark indexing as done before any potentially slow rebuild so the UI
+    // reflects the completed state immediately.
+    setIndexingStatus('indexed');
+
+    this.engineNeedsRebuild = true;
+    this.rebuildSearchEngineIfNeeded(wasManualRun);
+
+    if (this.getEnableWatchers() && !this.watchersStarted) {
+      this.startWatchers();
+    }
+  }
+
+  private rebuildSearchEngineIfNeeded(force = false): void {
+    if (!this.engineNeedsRebuild) return;
+
+    const throttleMs = 2000;
+    if (!force && Date.now() - this.lastRebuildTime < throttleMs) {
+      return;
+    }
+
+    searchEngine.rebuildIndex();
+    this.engineNeedsRebuild = false;
+    this.lastRebuildTime = Date.now();
   }
 }
 

@@ -1,22 +1,24 @@
 import fs from 'fs';
 import path from 'path';
-import { app, BrowserWindow, Menu, shell } from 'electron';
+import { app, BrowserWindow, dialog, Menu, shell } from 'electron';
 import { ipcMainHandle, ipcMainOn, ipcWebContentsSend, isDev } from './util.js';
 import { getPreloadPath, getUIPath } from './pathResolver.js';
 import { createMenu } from './menu.js';
 import {
   addFolder,
+  getFolderById,
   getFolders,
   removeFolder,
   setFolderEnabled,
 } from '../database/folders.js';
-import { indexerProgress } from '../indexer/indexer.js';
 import { indexManager } from '../indexer/IndexManager.js';
 import { IPC_CHANNELS } from '../ipc/channels.js';
 import { searchEngine } from '../search/engine.js';
 
+let mainWindow: BrowserWindow | null = null;
+
 app.on('ready', () => {
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: 900,
@@ -34,16 +36,22 @@ app.on('ready', () => {
 
   indexManager.initialize();
 
-  // Forward indexing progress to renderer
-  indexerProgress.subscribe((progress) => {
-    if (progress.status === 'completed') {
-      searchEngine.rebuildIndex();
-    }
-    ipcWebContentsSend(IPC_CHANNELS.INDEXING_PROGRESS, mainWindow.webContents, progress);
+  // Forward queue progress to renderer
+  indexManager.subscribeToProgress((progress) => {
+    if (!mainWindow) return;
+    ipcWebContentsSend(
+      IPC_CHANNELS.INDEXING_PROGRESS,
+      mainWindow.webContents,
+      progress
+    );
   });
 
   setupIpcHandlers();
   createMenu(mainWindow);
+});
+
+app.on('before-quit', () => {
+  indexManager.dispose();
 });
 
 function setupIpcHandlers() {
@@ -56,11 +64,17 @@ function setupIpcHandlers() {
       throw new Error(`Path is not a directory: ${folderPath}`);
     }
     const folder = addFolder(resolved);
+    indexManager.restartWatchers();
     return folder;
   });
 
   ipcMainHandle(IPC_CHANNELS.REMOVE_FOLDER, ({ id }) => {
+    const folder = getFolderById(id);
+    if (folder) {
+      indexManager.removeFolderFiles(folder.path);
+    }
     removeFolder(id);
+    indexManager.restartWatchers();
     return undefined;
   });
 
@@ -73,6 +87,7 @@ function setupIpcHandlers() {
     if (!folder) {
       throw new Error(`Folder ${id} not found`);
     }
+    indexManager.restartWatchers();
     return folder;
   });
 
@@ -81,8 +96,13 @@ function setupIpcHandlers() {
     return undefined;
   });
 
+  ipcMainHandle(IPC_CHANNELS.STOP_INDEXING, () => {
+    indexManager.stopIndexing();
+    return undefined;
+  });
+
   ipcMainHandle(IPC_CHANNELS.GET_INDEXING_STATUS, () => {
-    return indexerProgress.getProgress();
+    return indexManager.getQueueProgress();
   });
 
   ipcMainHandle(IPC_CHANNELS.GET_INDEX_STATUS, () => {
@@ -112,6 +132,43 @@ function setupIpcHandlers() {
       throw new Error(`Could not open file: ${error}`);
     }
     return undefined;
+  });
+
+  ipcMainHandle(
+    IPC_CHANNELS.OPEN_CONTAINING_FOLDER,
+    async ({ path: filePath }) => {
+      shell.showItemInFolder(filePath);
+      return undefined;
+    }
+  );
+
+  ipcMainHandle(IPC_CHANNELS.SELECT_FOLDER, async () => {
+    if (!mainWindow) return null;
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory'],
+    });
+    return result.canceled || result.filePaths.length === 0
+      ? null
+      : result.filePaths[0];
+  });
+
+  ipcMainHandle(IPC_CHANNELS.GET_SETTINGS, () => {
+    return {
+      autoSyncOnStartup: indexManager.getAutoSyncOnStartup(),
+      enableWatchers: indexManager.getEnableWatchers(),
+    };
+  });
+
+  ipcMainHandle(IPC_CHANNELS.SET_SETTING, ({ key, value }) => {
+    if (key === 'autoSyncOnStartup') {
+      indexManager.setAutoSyncOnStartup(value);
+    } else if (key === 'enableWatchers') {
+      indexManager.setEnableWatchers(value);
+    }
+    return {
+      autoSyncOnStartup: indexManager.getAutoSyncOnStartup(),
+      enableWatchers: indexManager.getEnableWatchers(),
+    };
   });
 
   ipcMainOn(IPC_CHANNELS.SEND_FRAME_ACTION, (payload) => {

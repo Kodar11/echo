@@ -5,6 +5,7 @@ interface FoldersState {
   isLoading: boolean;
   loadFolders: () => Promise<void>;
   addFolder: (path: string) => Promise<void>;
+  selectFolder: () => Promise<string | null>;
   removeFolder: (id: number) => Promise<void>;
   setEnabled: (id: number, enabled: boolean) => Promise<void>;
 }
@@ -19,6 +20,14 @@ export const useFoldersStore = create<FoldersState>((set, get) => ({
   addFolder: async (path) => {
     await window.electron.addFolder({ path });
     await get().loadFolders();
+  },
+  selectFolder: async () => {
+    const selected = await window.electron.selectFolder();
+    if (selected) {
+      await window.electron.addFolder({ path: selected });
+      await get().loadFolders();
+    }
+    return selected;
   },
   removeFolder: async (id) => {
     await window.electron.removeFolder({ id });

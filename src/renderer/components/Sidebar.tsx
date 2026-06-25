@@ -6,6 +6,7 @@ import {
   Settings,
 } from 'lucide-react';
 import { useIndexStore } from '../stores/indexStore.js';
+import { getBasename } from '../lib/path.js';
 
 type Page = 'search' | 'folders' | 'statistics' | 'settings';
 
@@ -56,7 +57,7 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
       </nav>
 
       <div className="border-t border-(--border) p-3">
-        <StatusIndicator status={status.status} />
+        <StatusIndicator status={status.status} queueLength={status.queueLength} />
         {statistics.lastIndexedAt && (
           <p className="mt-1.5 text-[11px] theme-text-tertiary">
             Indexed {formatRelativeTime(statistics.lastIndexedAt)}
@@ -64,7 +65,17 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
         )}
         {status.status === 'indexing' && status.total > 0 && (
           <div className="mt-2">
-            <div className="h-1 w-full overflow-hidden rounded-full bg-(--border-strong)">
+            <div className="flex items-center justify-between text-[10px] theme-text-tertiary">
+              <span className="truncate pr-2">
+                {status.currentFile
+                  ? getBasename(status.currentFile)
+                  : 'Scanning...'}
+              </span>
+              <span>
+                {status.processed}/{status.total}
+              </span>
+            </div>
+            <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-(--border-strong)">
               <div
                 className="h-full rounded-full bg-(--accent) transition-all"
                 style={{ width: `${(status.processed / status.total) * 100}%` }}
@@ -72,19 +83,33 @@ export function Sidebar({ currentPage, onNavigate }: SidebarProps) {
             </div>
           </div>
         )}
+        {status.queueLength > 0 && status.status !== 'indexing' && (
+          <p className="mt-1.5 text-[11px] theme-text-tertiary">
+            {status.queueLength} pending
+          </p>
+        )}
       </div>
     </aside>
   );
 }
 
-function StatusIndicator({ status }: { status: IndexStatus }) {
+function StatusIndicator({
+  status,
+  queueLength,
+}: {
+  status: IndexStatus;
+  queueLength: number;
+}) {
   const config: Record<IndexStatus, { label: string; color: string }> = {
     never_indexed: {
       label: 'Never indexed',
       color: 'bg-(--text-tertiary)',
     },
     indexing: { label: 'Indexing…', color: 'bg-(--accent)' },
-    indexed: { label: 'Indexed', color: 'bg-(--success)' },
+    indexed: {
+      label: queueLength > 0 ? 'Syncing' : 'Indexed',
+      color: queueLength > 0 ? 'bg-(--accent)' : 'bg-(--success)',
+    },
     error: { label: 'Error', color: 'bg-(--danger)' },
   };
 

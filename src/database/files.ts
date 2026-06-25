@@ -9,6 +9,12 @@ export interface FileRecord {
   indexed_at: number;
 }
 
+export interface FilePathRecord {
+  path: string;
+  size: number;
+  modified_time: number;
+}
+
 export function insertFile(
   path: string,
   size: number,
@@ -42,6 +48,20 @@ export function getAllFiles(): FileRecord[] {
   return stmt.all() as FileRecord[];
 }
 
+export function getAllFilePaths(): FilePathRecord[] {
+  const db = getDatabase();
+  const stmt = db.prepare('SELECT path, size, modified_time FROM Files');
+  return stmt.all() as FilePathRecord[];
+}
+
+export function getFilePathsByPrefix(prefix: string): string[] {
+  const db = getDatabase();
+  const rows = db
+    .prepare('SELECT path FROM Files WHERE path LIKE ?')
+    .all(`${prefix}%`) as { path: string }[];
+  return rows.map((row) => row.path);
+}
+
 export function getFileCount(): number {
   const db = getDatabase();
   const stmt = db.prepare('SELECT COUNT(*) as count FROM Files');
@@ -55,6 +75,12 @@ export function deleteFileByPath(path: string): void {
   if (!file) return;
   db.prepare('DELETE FROM Postings WHERE file_id = ?').run(file.id);
   db.prepare('DELETE FROM Files WHERE id = ?').run(file.id);
+}
+
+export function deleteFileById(id: number): void {
+  const db = getDatabase();
+  db.prepare('DELETE FROM Postings WHERE file_id = ?').run(id);
+  db.prepare('DELETE FROM Files WHERE id = ?').run(id);
 }
 
 export function deleteAllFiles(): void {
