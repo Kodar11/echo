@@ -1,7 +1,9 @@
 import { useEffect } from 'react';
 import {
+  Activity,
   BarChart3,
   Copy,
+  FileWarning,
   FolderOpen,
   Search,
   Settings,
@@ -9,7 +11,7 @@ import {
 import { useIndexStore } from '../stores/indexStore.js';
 import { getBasename } from '../lib/path.js';
 
-type Page = 'search' | 'folders' | 'statistics' | 'duplicates' | 'settings';
+type Page = 'search' | 'folders' | 'statistics' | 'duplicates' | 'health' | 'broken' | 'settings';
 
 interface SidebarProps {
   currentPage: Page;
@@ -21,6 +23,8 @@ const navItems: { page: Page; label: string; icon: typeof Search }[] = [
   { page: 'folders', label: 'Folders', icon: FolderOpen },
   { page: 'statistics', label: 'Statistics', icon: BarChart3 },
   { page: 'duplicates', label: 'Duplicates', icon: Copy },
+  { page: 'health', label: 'Health', icon: Activity },
+  { page: 'broken', label: 'Broken Files', icon: FileWarning },
   { page: 'settings', label: 'Settings', icon: Settings },
 ];
 

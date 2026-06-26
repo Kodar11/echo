@@ -4,7 +4,10 @@ interface SettingsState {
   settings: AppSettings;
   isLoading: boolean;
   loadSettings: () => Promise<void>;
-  setSetting: (key: keyof AppSettings, value: boolean) => Promise<void>;
+  setSetting: (
+    key: keyof AppSettings,
+    value: boolean | string | number | ExtractorId[]
+  ) => Promise<void>;
 }
 
 const defaultSettings: AppSettings = {
@@ -14,6 +17,14 @@ const defaultSettings: AppSettings = {
   enableStemming: false,
   enableLanguageDetection: true,
   indexMetadata: true,
+  maxFileSizeBytes: 0,
+  enabledExtractors: ['pdf', 'docx', 'html', 'markdown', 'text'],
+  indexingMode: 'immediate',
+  scheduleInterval: 'daily',
+  enableIndexLogging: true,
+  enableWatcherLogging: true,
+  enableErrorLogging: true,
+  enableDebugLogging: false,
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

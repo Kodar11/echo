@@ -10,11 +10,13 @@ export interface IndexMetadataRecord {
   id: number;
   status: IndexStatus;
   last_indexed_at: number | null;
+  last_synced_at: number | null;
   last_index_duration_ms: number | null;
   average_index_duration_ms: number | null;
   total_indexing_runs: number;
   total_indexed_files: number;
   total_indexed_terms: number;
+  ignored_files_count: number;
   error_message: string | null;
 }
 
@@ -40,6 +42,9 @@ export function setIndexingStatus(
   errorMessage?: string
 ): void {
   const db = getDatabase();
+  db.prepare(
+    `INSERT OR IGNORE INTO IndexMetadata (id, status) VALUES (1, 'never_indexed')`
+  ).run();
   db.prepare(
     `UPDATE IndexMetadata
      SET status = ?, error_message = ?
@@ -79,20 +84,43 @@ export function recordIndexingCompleted(
   );
 }
 
+export function recordSyncCompleted(): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE IndexMetadata SET last_synced_at = ? WHERE id = 1`
+  ).run(Date.now());
+}
+
 export function resetIndexMetadata(): void {
   const db = getDatabase();
   db.prepare(
     `UPDATE IndexMetadata
      SET status = 'never_indexed',
          last_indexed_at = NULL,
+         last_synced_at = NULL,
          last_index_duration_ms = NULL,
          average_index_duration_ms = NULL,
          total_indexing_runs = 0,
          total_indexed_files = 0,
          total_indexed_terms = 0,
+         ignored_files_count = 0,
          error_message = NULL
      WHERE id = 1`
   ).run();
+}
+
+export function setIgnoredFilesCount(count: number): void {
+  const db = getDatabase();
+  db.prepare(
+    `INSERT OR IGNORE INTO IndexMetadata (id, status) VALUES (1, 'never_indexed')`
+  ).run();
+  db.prepare(
+    `UPDATE IndexMetadata SET ignored_files_count = ? WHERE id = 1`
+  ).run(count);
+}
+
+export function getIgnoredFilesCount(): number {
+  return getIndexMetadata().ignored_files_count;
 }
 
 function computeAverageDuration(durationMs: number): number {

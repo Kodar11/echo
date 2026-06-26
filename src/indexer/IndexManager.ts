@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { app } from 'electron';
 import { getDatabasePath } from '../database/connection.js';
 import {
   deleteAllFiles,
@@ -19,10 +20,21 @@ import {
   startIndexingRun,
 } from '../database/indexingRuns.js';
 import { deleteAllPostings } from '../database/postings.js';
-import { getBooleanSetting, setBooleanSetting } from '../database/settings.js';
+import {
+  getBooleanSetting,
+  getSetting,
+  setBooleanSetting,
+  setSetting,
+} from '../database/settings.js';
 import { deleteAllTerms, getTermCount } from '../database/terms.js';
 import { SETTING_KEYS } from '../settings/keys.js';
 import { searchEngine } from '../search/engine.js';
+import { backupManager } from '../services/backup/BackupManager.js';
+import { extractorManager, type ExtractorId } from '../services/extractors/ExtractorManager.js';
+import { healthManager, type HealthStats } from '../services/health/HealthManager.js';
+import { ignoreRuleManager, type IgnoreRuleRecord, type IgnoreRuleType } from '../services/ignore/IgnoreRuleManager.js';
+import { createLogger, getLogger, type LogCategory } from '../services/logger/logger.js';
+import { ScheduleManager, type IndexingMode, type ScheduleInterval } from '../services/scheduler/ScheduleManager.js';
 import {
   IndexQueue,
   type IndexQueueProgress,
@@ -63,6 +75,7 @@ export class IndexManager {
   private queue: IndexQueue;
   private syncManager: SyncManager;
   private watcherManager: WatcherManager;
+  private scheduleManager: ScheduleManager;
   private currentRunId: number | null = null;
   private runStartTime = 0;
   private manualRunInProgress = false;
@@ -70,6 +83,7 @@ export class IndexManager {
   private lastRebuildTime = 0;
   private watchersStarted = false;
   private unsubscribeQueue?: () => void;
+  private loggerInitialized = false;
 
   constructor() {
     this.queue = new IndexQueue({
@@ -77,27 +91,63 @@ export class IndexManager {
     });
     this.syncManager = new SyncManager(this.queue);
     this.watcherManager = new WatcherManager(this.queue, this.syncManager);
+    this.scheduleManager = new ScheduleManager({
+      onStartupSync: () =>
+        this.syncManager.sync({ trigger: 'scheduled' }).then(() => undefined),
+    });
   }
 
   initialize(): void {
+    this.initializeLogger();
     this.ensureMetadata();
+    extractorManager.initialize();
+    ignoreRuleManager.initialize();
     this.loadIndex();
+
     this.unsubscribeQueue = this.queue.subscribe((progress) => {
       this.handleQueueProgress(progress);
     });
 
-    if (this.getAutoSyncOnStartup() && this.shouldRunStartupSync()) {
+    if (this.scheduleManager.shouldRunStartupSync() && this.shouldRunStartupSync()) {
       this.runStartupSync();
-    } else {
-      if (this.getEnableWatchers()) {
-        this.startWatchers();
-      }
     }
+
+    if (this.scheduleManager.shouldEnableWatchers()) {
+      this.startWatchers();
+    }
+
+    this.scheduleManager.start();
   }
 
   dispose(): void {
     this.unsubscribeQueue?.();
     this.watcherManager.stop();
+    this.scheduleManager.stop();
+    getLogger().close();
+  }
+
+  private initializeLogger(): void {
+    if (this.loggerInitialized) return;
+    const logDir = path.join(app.getPath('userData'), 'echo', 'logs');
+    createLogger({
+      logDir,
+      enabledCategories: {
+        index: this.getEnableIndexLogging(),
+        watcher: this.getEnableWatcherLogging(),
+        errors: this.getEnableErrorLogging(),
+        debug: this.getEnableDebugLogging(),
+      },
+    });
+    this.loggerInitialized = true;
+  }
+
+  refreshLogger(): void {
+    getLogger().setEnabledCategories({
+      index: this.getEnableIndexLogging(),
+      watcher: this.getEnableWatcherLogging(),
+      errors: this.getEnableErrorLogging(),
+      debug: this.getEnableDebugLogging(),
+    });
   }
 
   ensureMetadata(): void {
@@ -151,7 +201,7 @@ export class IndexManager {
     setIndexingStatus('indexed');
     this.rebuildSearchEngineIfNeeded(true);
 
-    if (this.getEnableWatchers()) {
+    if (this.scheduleManager.shouldEnableWatchers()) {
       this.startWatchers();
     }
   }
@@ -216,6 +266,10 @@ export class IndexManager {
     };
   }
 
+  getHealthStats(): HealthStats {
+    return healthManager.getHealthStats(this.queue.getProgress().pendingTasks);
+  }
+
   removeFolderFiles(folderPath: string): void {
     const prefix = folderPath.endsWith(path.sep)
       ? folderPath
@@ -230,29 +284,75 @@ export class IndexManager {
   }
 
   restartWatchers(): void {
-    if (this.getEnableWatchers()) {
+    if (this.scheduleManager.shouldEnableWatchers()) {
       this.startWatchers();
     }
   }
 
   getAutoSyncOnStartup(): boolean {
-    return getBooleanSetting(SETTING_KEYS.autoSyncOnStartup, true);
+    return this.scheduleManager.shouldRunStartupSync();
   }
 
   setAutoSyncOnStartup(enabled: boolean): void {
-    setBooleanSetting(SETTING_KEYS.autoSyncOnStartup, enabled);
+    // Kept for backwards compatibility; maps to immediate/startup modes.
+    const mode = enabled ? 'immediate' : 'manual';
+    this.scheduleManager.setIndexingMode(mode as IndexingMode);
+    this.applyScheduleMode();
   }
 
   getEnableWatchers(): boolean {
-    return getBooleanSetting(SETTING_KEYS.enableWatchers, true);
+    return this.scheduleManager.shouldEnableWatchers();
   }
 
   setEnableWatchers(enabled: boolean): void {
-    setBooleanSetting(SETTING_KEYS.enableWatchers, enabled);
-    if (enabled) {
-      this.startWatchers();
-    } else {
-      this.stopWatchers();
+    const mode = enabled ? 'immediate' : 'manual';
+    this.scheduleManager.setIndexingMode(mode as IndexingMode);
+    this.applyScheduleMode();
+  }
+
+  getIndexingMode(): IndexingMode {
+    return this.scheduleManager.getIndexingMode();
+  }
+
+  setIndexingMode(mode: IndexingMode): void {
+    const changed = this.scheduleManager.getIndexingMode() !== mode;
+    this.scheduleManager.setIndexingMode(mode);
+    if (changed) {
+      this.applyScheduleMode();
+    }
+  }
+
+  getScheduleInterval(): ScheduleInterval {
+    return this.scheduleManager.getScheduleInterval();
+  }
+
+  setScheduleInterval(interval: ScheduleInterval): void {
+    this.scheduleManager.setScheduleInterval(interval);
+    this.applyScheduleMode();
+  }
+
+  getMaxFileSizeBytes(): number {
+    const raw = getSetting(SETTING_KEYS.maxFileSizeBytes);
+    if (!raw) return 0;
+    const value = parseInt(raw, 10);
+    return isNaN(value) ? 0 : value;
+  }
+
+  setMaxFileSizeBytes(bytes: number): void {
+    setSetting(SETTING_KEYS.maxFileSizeBytes, String(bytes));
+  }
+
+  getEnabledExtractors(): ExtractorId[] {
+    return extractorManager.getEnabled();
+  }
+
+  setEnabledExtractors(ids: ExtractorId[]): void {
+    const changed =
+      JSON.stringify(extractorManager.getEnabled().sort()) !==
+      JSON.stringify(ids.sort());
+    extractorManager.setEnabled(ids);
+    if (changed) {
+      this.triggerReindex();
     }
   }
 
@@ -304,12 +404,100 @@ export class IndexManager {
     }
   }
 
+  getEnableIndexLogging(): boolean {
+    return getBooleanSetting(SETTING_KEYS.enableIndexLogging, true);
+  }
+
+  setEnableIndexLogging(enabled: boolean): void {
+    setBooleanSetting(SETTING_KEYS.enableIndexLogging, enabled);
+    this.refreshLogger();
+  }
+
+  getEnableWatcherLogging(): boolean {
+    return getBooleanSetting(SETTING_KEYS.enableWatcherLogging, true);
+  }
+
+  setEnableWatcherLogging(enabled: boolean): void {
+    setBooleanSetting(SETTING_KEYS.enableWatcherLogging, enabled);
+    this.refreshLogger();
+  }
+
+  getEnableErrorLogging(): boolean {
+    return getBooleanSetting(SETTING_KEYS.enableErrorLogging, true);
+  }
+
+  setEnableErrorLogging(enabled: boolean): void {
+    setBooleanSetting(SETTING_KEYS.enableErrorLogging, enabled);
+    this.refreshLogger();
+  }
+
+  getEnableDebugLogging(): boolean {
+    return getBooleanSetting(SETTING_KEYS.enableDebugLogging, false);
+  }
+
+  setEnableDebugLogging(enabled: boolean): void {
+    setBooleanSetting(SETTING_KEYS.enableDebugLogging, enabled);
+    this.refreshLogger();
+  }
+
+  getLogDir(): string {
+    return getLogger().getLogDir();
+  }
+
+  // Ignore rules
+  getIgnoreRules(): IgnoreRuleRecord[] {
+    return ignoreRuleManager.getRules();
+  }
+
+  addIgnoreRule(pattern: string, type: IgnoreRuleType = 'glob'): IgnoreRuleRecord {
+    const rule = ignoreRuleManager.addRule(pattern, type);
+    return rule;
+  }
+
+  setIgnoreRuleEnabled(id: number, enabled: boolean): void {
+    ignoreRuleManager.setEnabled(id, enabled);
+  }
+
+  deleteIgnoreRule(id: number): void {
+    ignoreRuleManager.deleteRule(id);
+  }
+
+  // Backup
+  async exportBackup(destinationPath: string): Promise<void> {
+    return backupManager.exportBackup(destinationPath);
+  }
+
+  async importBackup(sourcePath: string): Promise<void> {
+    await backupManager.importBackup(sourcePath);
+  }
+
+  async validateBackup(sourcePath: string): Promise<{ valid: boolean; error?: string }> {
+    return backupManager.validateBackup(sourcePath);
+  }
+
+  private applyScheduleMode(): void {
+    this.scheduleManager.stop();
+    if (this.manualRunInProgress) return;
+
+    if (this.scheduleManager.shouldEnableWatchers()) {
+      this.startWatchers();
+    } else {
+      this.stopWatchers();
+    }
+
+    if (this.scheduleManager.getIndexingMode() === 'scheduled') {
+      this.scheduleManager.start();
+    }
+  }
+
   private triggerReindex(): void {
-    // Schedule a full reindex so the existing index stays consistent with the
-    // new language-processing settings.
     setTimeout(() => {
       this.startIndexing().catch((err) => {
-        console.error('Auto-reindex failed:', err);
+        getLogger().error(
+          'index',
+          'IndexManager',
+          `Auto-reindex failed: ${err instanceof Error ? err.message : String(err)}`
+        );
       });
     }, 100);
   }
@@ -323,14 +511,17 @@ export class IndexManager {
   }
 
   private runStartupSync(): void {
-    // Defer startup sync slightly so the UI finishes loading.
     setTimeout(() => {
       this.syncManager.sync({ trigger: 'startup' }).catch((err) => {
-        console.error('Startup sync failed:', err);
+        getLogger().error(
+          'index',
+          'IndexManager',
+          `Startup sync failed: ${err instanceof Error ? err.message : String(err)}`
+        );
         setIndexingStatus('indexed');
         this.engineNeedsRebuild = true;
         this.rebuildSearchEngineIfNeeded(true);
-        if (this.getEnableWatchers() && !this.watchersStarted) {
+        if (this.scheduleManager.shouldEnableWatchers() && !this.watchersStarted) {
           this.startWatchers();
         }
       });
@@ -364,7 +555,7 @@ export class IndexManager {
       this.engineNeedsRebuild = true;
       this.rebuildSearchEngineIfNeeded(true);
 
-      if (this.getEnableWatchers() && !this.watchersStarted) {
+      if (this.scheduleManager.shouldEnableWatchers() && !this.watchersStarted) {
         this.startWatchers();
       }
     }
@@ -384,14 +575,12 @@ export class IndexManager {
       this.currentRunId = null;
     }
 
-    // Mark indexing as done before any potentially slow rebuild so the UI
-    // reflects the completed state immediately.
     setIndexingStatus('indexed');
 
     this.engineNeedsRebuild = true;
     this.rebuildSearchEngineIfNeeded(wasManualRun);
 
-    if (this.getEnableWatchers() && !this.watchersStarted) {
+    if (this.scheduleManager.shouldEnableWatchers() && !this.watchersStarted) {
       this.startWatchers();
     }
   }

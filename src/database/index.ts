@@ -6,3 +6,5 @@ export * from './folders.js';
 export * from './indexMetadata.js';
 export * from './indexingRuns.js';
 export * from './settings.js';
+export * from './indexingFailures.js';
+export * from './ignoreRules.js';

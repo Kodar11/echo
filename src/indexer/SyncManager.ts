@@ -1,6 +1,8 @@
 import fs from 'fs/promises';
 import { getAllFilePaths } from '../database/files.js';
 import { getEnabledFolders } from '../database/folders.js';
+import { recordSyncCompleted, setIgnoredFilesCount } from '../database/indexMetadata.js';
+import { getLogger } from '../services/logger/logger.js';
 import { crawlDirectory } from './crawler.js';
 import type { IndexQueue, IndexTask } from './IndexQueue.js';
 
@@ -13,13 +15,15 @@ export interface SyncResult {
 export class SyncManager {
   constructor(private queue: IndexQueue) {}
 
-  async sync(options: { trigger?: 'startup' | 'manual' } = {}): Promise<SyncResult> {
+  async sync(options: { trigger?: 'startup' | 'manual' | 'scheduled' } = {}): Promise<SyncResult> {
     const folders = getEnabledFolders();
     const diskFiles = new Map<string, { size: number; mtimeMs: number }>();
+    let totalIgnored = 0;
 
     for (const folder of folders) {
       try {
-        const files = await crawlDirectory(folder.path);
+        const { files, ignoredCount } = await crawlDirectory(folder.path);
+        totalIgnored += ignoredCount;
         for (const filePath of files) {
           try {
             const stats = await this.statFile(filePath);
@@ -34,6 +38,8 @@ export class SyncManager {
         // Ignore folders we can't crawl.
       }
     }
+
+    setIgnoredFilesCount(totalIgnored);
 
     const dbFiles = new Map<string, { size: number; modified_time: number }>();
     for (const file of getAllFilePaths()) {
@@ -63,6 +69,13 @@ export class SyncManager {
     if (tasks.length > 0) {
       this.queue.enqueueMany(tasks);
     }
+
+    recordSyncCompleted();
+    getLogger().info(
+      'index',
+      'SyncManager',
+      `Sync complete: ${tasks.filter((t) => t.type === 'index').length} to index, ${tasks.filter((t) => t.type === 'delete').length} to delete`
+    );
 
     return {
       toIndex: tasks.filter((t) => t.type === 'index').length,

@@ -39,11 +39,13 @@ CREATE TABLE IF NOT EXISTS IndexMetadata (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   status TEXT NOT NULL DEFAULT 'never_indexed',
   last_indexed_at INTEGER,
+  last_synced_at INTEGER,
   last_index_duration_ms INTEGER,
   average_index_duration_ms INTEGER,
   total_indexing_runs INTEGER NOT NULL DEFAULT 0,
   total_indexed_files INTEGER NOT NULL DEFAULT 0,
   total_indexed_terms INTEGER NOT NULL DEFAULT 0,
+  ignored_files_count INTEGER NOT NULL DEFAULT 0,
   error_message TEXT
 );
 
@@ -60,6 +62,24 @@ CREATE TABLE IF NOT EXISTS IndexingRuns (
 CREATE TABLE IF NOT EXISTS Settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS IndexingFailures (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  path TEXT UNIQUE NOT NULL,
+  category TEXT NOT NULL,
+  message TEXT NOT NULL,
+  occurred_at INTEGER NOT NULL,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  ignored INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS IgnoreRules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  pattern TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT 'glob',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  created_at INTEGER NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_terms_term ON Terms(term);

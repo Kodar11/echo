@@ -25,3 +25,15 @@ export function getBooleanSetting(key: string, defaultValue = false): boolean {
 export function setBooleanSetting(key: string, value: boolean): void {
   setSetting(key, value ? '1' : '0');
 }
+
+export function getAllSettings(): Record<string, string> {
+  const db = getDatabase();
+  const rows = db
+    .prepare('SELECT key, value FROM Settings')
+    .all() as { key: string; value: string }[];
+  const result: Record<string, string> = {};
+  for (const row of rows) {
+    result[row.key] = row.value;
+  }
+  return result;
+}

@@ -1,7 +1,11 @@
 import { test, expect, _electron } from '@playwright/test';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
 let electronApp: Awaited<ReturnType<typeof _electron.launch>>;
 let mainPage: Awaited<ReturnType<typeof electronApp.firstWindow>>;
+let userDataDir: string;
 
 async function waitForPreloadScript() {
   return new Promise<void>((resolve) => {
@@ -18,8 +22,12 @@ async function waitForPreloadScript() {
 }
 
 test.beforeEach(async () => {
+  userDataDir = path.join(
+    os.tmpdir(),
+    `echo-e2e-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  );
   electronApp = await _electron.launch({
-    args: ['.'],
+    args: ['.', `--user-data-dir=${userDataDir}`],
     env: { NODE_ENV: 'development' },
   });
   mainPage = await electronApp.firstWindow();
@@ -28,6 +36,11 @@ test.beforeEach(async () => {
 
 test.afterEach(async () => {
   await electronApp.close();
+  try {
+    fs.rmSync(userDataDir, { recursive: true, force: true });
+  } catch {
+    // Ignore cleanup failures on Windows locked files.
+  }
 });
 
 test('should show the Echo search page', async () => {
@@ -53,7 +66,19 @@ test('should navigate through sidebar pages', async () => {
   await expect(mainPage.getByText('Overview')).toBeVisible();
 
   await mainPage.getByText('Duplicates', { exact: true }).click();
-  await expect(mainPage.getByText('No duplicates found')).toBeVisible();
+  await expect(
+    mainPage.getByRole('heading', { name: 'No duplicates found' })
+  ).toBeVisible({ timeout: 10000 });
+
+  await mainPage.getByText('Health', { exact: true }).click();
+  await expect(
+    mainPage.getByRole('heading', { name: 'Index Health' })
+  ).toBeVisible({ timeout: 10000 });
+
+  await mainPage.getByText('Broken Files', { exact: true }).click();
+  await expect(
+    mainPage.getByRole('heading', { name: 'Broken Files' })
+  ).toBeVisible({ timeout: 10000 });
 
   await mainPage.getByText('Settings', { exact: true }).click();
   await expect(

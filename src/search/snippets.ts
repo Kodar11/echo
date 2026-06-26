@@ -1,4 +1,4 @@
-import { getExtractor } from '../file-extractors/registry.js';
+import { extractorManager } from '../services/extractors/ExtractorManager.js';
 import { normalizeText } from '../language/normalize.js';
 
 const MAX_SNIPPETS = 3;
@@ -16,7 +16,7 @@ export async function generateSnippets(
   matchedTerms: string[],
   phraseMatchPositions?: number[]
 ): Promise<Snippet[]> {
-  const extractor = getExtractor(filePath);
+  const extractor = extractorManager.getExtractor(filePath);
   if (!extractor) return [];
 
   let text: string;

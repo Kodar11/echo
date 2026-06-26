@@ -1,3 +1,5 @@
+import { recordIndexingFailure } from '../database/index.js';
+import { getLogger } from '../services/logger/logger.js';
 import { deleteSingleFile, indexSingleFile } from './singleFileIndexer.js';
 
 export type IndexTaskType = 'index' | 'delete';
@@ -171,10 +173,14 @@ export class IndexQueue {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(
-        `IndexQueue task failed (${task.type} ${task.path}):`,
-        message
+      getLogger().error(
+        'index',
+        'IndexQueue',
+        `Task failed (${task.type} ${task.path}): ${message}`
       );
+      if (task.type === 'index') {
+        recordIndexingFailure(task.path, 'extraction_failed', message);
+      }
       this.error = message;
       this.status = 'error';
       this.notify();

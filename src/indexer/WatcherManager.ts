@@ -1,5 +1,7 @@
 import { watch, type FSWatcher } from 'chokidar';
 import type { FolderRecord } from '../database/folders.js';
+import { ignoreRuleManager } from '../services/ignore/IgnoreRuleManager.js';
+import { getLogger } from '../services/logger/logger.js';
 import type { IndexQueue, IndexTask } from './IndexQueue.js';
 import type { SyncManager } from './SyncManager.js';
 
@@ -25,7 +27,10 @@ export class WatcherManager {
     if (paths.length === 0) return;
 
     this.watcher = watch(paths, {
-      ignored: /(^|[\/\\])\../,
+      ignored: (filePath: string) => {
+        if (/(^|[\/\\])\../.test(filePath)) return true;
+        return ignoreRuleManager.shouldIgnore(filePath);
+      },
       ignoreInitial: true,
       persistent: true,
       awaitWriteFinish: {
@@ -39,7 +44,7 @@ export class WatcherManager {
     this.watcher.on('unlink', (filePath) => this.onChange(filePath, 'delete'));
     this.watcher.on('unlinkDir', (dirPath) => this.onUnlinkDir(dirPath));
     this.watcher.on('error', (error) => {
-      console.error('Watcher error:', error);
+      getLogger().error('watcher', 'WatcherManager', String(error));
     });
   }
 
@@ -60,6 +65,8 @@ export class WatcherManager {
   }
 
   private onChange(filePath: string, type: IndexTask['type']): void {
+    if (ignoreRuleManager.shouldIgnore(filePath)) return;
+
     // Coalesce delete -> index transitions and vice versa.
     this.pending.set(filePath, type);
     this.scheduleFlush();
@@ -68,7 +75,11 @@ export class WatcherManager {
   private onUnlinkDir(_dirPath: string): void {
     // Watchers can miss bulk deletes, so schedule a full sync to clean up.
     this.syncManager.sync({ trigger: 'manual' }).catch((err) => {
-      console.error('Watcher sync failed:', err);
+      getLogger().error(
+        'watcher',
+        'WatcherManager',
+        `Sync failed: ${err instanceof Error ? err.message : String(err)}`
+      );
     });
   }
 

@@ -14,18 +14,31 @@ const FILES_MIGRATIONS: ColumnMigration[] = [
   { column: 'extension', type: 'TEXT', index: 'idx_files_extension' },
 ];
 
+const INDEX_METADATA_MIGRATIONS: ColumnMigration[] = [
+  { column: 'ignored_files_count', type: 'INTEGER NOT NULL DEFAULT 0' },
+];
+
 export function runMigrations(database: Database.Database): void {
+  migrateTable(database, 'Files', FILES_MIGRATIONS);
+  migrateTable(database, 'IndexMetadata', INDEX_METADATA_MIGRATIONS);
+}
+
+function migrateTable(
+  database: Database.Database,
+  table: string,
+  migrations: ColumnMigration[]
+): void {
   const columns = database
-    .prepare('PRAGMA table_info(Files)')
+    .prepare(`PRAGMA table_info(${table})`)
     .all() as { name: string }[];
   const existing = new Set(columns.map((c) => c.name));
 
-  for (const { column, type, index } of FILES_MIGRATIONS) {
+  for (const { column, type, index } of migrations) {
     if (!existing.has(column)) {
       try {
-        database.exec(`ALTER TABLE Files ADD COLUMN ${column} ${type}`);
+        database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
       } catch (err) {
-        console.error(`Migration failed: ADD COLUMN ${column}`, err);
+        console.error(`Migration failed: ADD COLUMN ${column} to ${table}`, err);
         continue;
       }
     }
@@ -33,7 +46,7 @@ export function runMigrations(database: Database.Database): void {
     if (index) {
       try {
         database.exec(
-          `CREATE INDEX IF NOT EXISTS ${index} ON Files(${column})`
+          `CREATE INDEX IF NOT EXISTS ${index} ON ${table}(${column})`
         );
       } catch (err) {
         console.error(`Index creation failed: ${index}`, err);

@@ -11,10 +11,16 @@ import {
   removeFolder,
   setFolderEnabled,
 } from '../database/folders.js';
+import {
+  getIndexingFailures,
+  setIndexingFailureIgnored,
+  type IndexingFailureRecord,
+} from '../database/indexingFailures.js';
 import { indexManager } from '../indexer/IndexManager.js';
 import { IPC_CHANNELS } from '../ipc/channels.js';
 import { searchEngine } from '../search/engine.js';
 import { findDuplicateGroups } from '../search/duplicates.js';
+import type { IgnoreRuleRecord } from '../services/ignore/IgnoreRuleManager.js';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -117,6 +123,10 @@ function setupIpcHandlers() {
     return indexManager.getStatistics();
   });
 
+  ipcMainHandle(IPC_CHANNELS.GET_HEALTH_STATS, () => {
+    return indexManager.getHealthStats();
+  });
+
   ipcMainHandle(IPC_CHANNELS.DELETE_INDEX, () => {
     indexManager.deleteIndex();
     return undefined;
@@ -156,43 +166,84 @@ function setupIpcHandlers() {
       : result.filePaths[0];
   });
 
+  ipcMainHandle(IPC_CHANNELS.SELECT_FILE, async () => {
+    if (!mainWindow) return null;
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters: [{ name: 'Zip files', extensions: ['zip'] }],
+    });
+    return result.canceled || result.filePaths.length === 0
+      ? null
+      : result.filePaths[0];
+  });
+
   ipcMainHandle(IPC_CHANNELS.GET_SETTINGS, () => {
-    return {
-      autoSyncOnStartup: indexManager.getAutoSyncOnStartup(),
-      enableWatchers: indexManager.getEnableWatchers(),
-      removeStopWords: indexManager.getRemoveStopWords(),
-      enableStemming: indexManager.getEnableStemming(),
-      enableLanguageDetection: indexManager.getEnableLanguageDetection(),
-      indexMetadata: indexManager.getIndexMetadata(),
-    };
+    return buildSettings();
   });
 
   ipcMainHandle(IPC_CHANNELS.SET_SETTING, ({ key, value }) => {
-    if (key === 'autoSyncOnStartup') {
-      indexManager.setAutoSyncOnStartup(value);
-    } else if (key === 'enableWatchers') {
-      indexManager.setEnableWatchers(value);
-    } else if (key === 'removeStopWords') {
-      indexManager.setRemoveStopWords(value);
-    } else if (key === 'enableStemming') {
-      indexManager.setEnableStemming(value);
-    } else if (key === 'enableLanguageDetection') {
-      indexManager.setEnableLanguageDetection(value);
-    } else if (key === 'indexMetadata') {
-      indexManager.setIndexMetadata(value);
-    }
-    return {
-      autoSyncOnStartup: indexManager.getAutoSyncOnStartup(),
-      enableWatchers: indexManager.getEnableWatchers(),
-      removeStopWords: indexManager.getRemoveStopWords(),
-      enableStemming: indexManager.getEnableStemming(),
-      enableLanguageDetection: indexManager.getEnableLanguageDetection(),
-      indexMetadata: indexManager.getIndexMetadata(),
-    };
+    applySetting(key, value);
+    return buildSettings();
   });
 
   ipcMainHandle(IPC_CHANNELS.GET_DUPLICATES, () => {
     return findDuplicateGroups();
+  });
+
+  ipcMainHandle(IPC_CHANNELS.GET_INDEXING_FAILURES, () => {
+    return getIndexingFailures(false).map(mapFailureRecord);
+  });
+
+  ipcMainHandle(IPC_CHANNELS.RETRY_INDEXING_FAILURE, async ({ path }) => {
+    await indexManager.startIndexing();
+    return undefined;
+  });
+
+  ipcMainHandle(IPC_CHANNELS.IGNORE_INDEXING_FAILURE, ({ path, ignored }) => {
+    setIndexingFailureIgnored(path, ignored);
+    return undefined;
+  });
+
+  ipcMainHandle(IPC_CHANNELS.GET_IGNORE_RULES, () => {
+    return indexManager.getIgnoreRules().map(mapIgnoreRuleRecord);
+  });
+
+  ipcMainHandle(IPC_CHANNELS.ADD_IGNORE_RULE, ({ pattern, type }) => {
+    const rule = indexManager.addIgnoreRule(pattern, type);
+    indexManager.restartWatchers();
+    return mapIgnoreRuleRecord(rule);
+  });
+
+  ipcMainHandle(IPC_CHANNELS.SET_IGNORE_RULE_ENABLED, ({ id, enabled }) => {
+    indexManager.setIgnoreRuleEnabled(id, enabled);
+    indexManager.restartWatchers();
+    return undefined;
+  });
+
+  ipcMainHandle(IPC_CHANNELS.DELETE_IGNORE_RULE, ({ id }) => {
+    indexManager.deleteIgnoreRule(id);
+    indexManager.restartWatchers();
+    return undefined;
+  });
+
+  ipcMainHandle(IPC_CHANNELS.EXPORT_BACKUP, async ({ destinationPath }) => {
+    await indexManager.exportBackup(destinationPath);
+    return undefined;
+  });
+
+  ipcMainHandle(IPC_CHANNELS.IMPORT_BACKUP, async ({ sourcePath }) => {
+    await indexManager.importBackup(sourcePath);
+    return undefined;
+  });
+
+  ipcMainHandle(IPC_CHANNELS.VALIDATE_BACKUP, async ({ sourcePath }) => {
+    return indexManager.validateBackup(sourcePath);
+  });
+
+  ipcMainHandle(IPC_CHANNELS.OPEN_LOG_FOLDER, async () => {
+    const logDir = indexManager.getLogDir();
+    await shell.openPath(logDir);
+    return undefined;
   });
 
   ipcMainOn(IPC_CHANNELS.SEND_FRAME_ACTION, (payload) => {
@@ -214,4 +265,95 @@ function setupIpcHandlers() {
         break;
     }
   });
+}
+
+function buildSettings(): AppSettings {
+  return {
+    autoSyncOnStartup: indexManager.getAutoSyncOnStartup(),
+    enableWatchers: indexManager.getEnableWatchers(),
+    removeStopWords: indexManager.getRemoveStopWords(),
+    enableStemming: indexManager.getEnableStemming(),
+    enableLanguageDetection: indexManager.getEnableLanguageDetection(),
+    indexMetadata: indexManager.getIndexMetadata(),
+    maxFileSizeBytes: indexManager.getMaxFileSizeBytes(),
+    enabledExtractors: indexManager.getEnabledExtractors(),
+    indexingMode: indexManager.getIndexingMode(),
+    scheduleInterval: indexManager.getScheduleInterval(),
+    enableIndexLogging: indexManager.getEnableIndexLogging(),
+    enableWatcherLogging: indexManager.getEnableWatcherLogging(),
+    enableErrorLogging: indexManager.getEnableErrorLogging(),
+    enableDebugLogging: indexManager.getEnableDebugLogging(),
+  };
+}
+
+function applySetting(
+  key: keyof AppSettings,
+  value: boolean | string | number | ExtractorId[]
+): void {
+  switch (key) {
+    case 'autoSyncOnStartup':
+      indexManager.setAutoSyncOnStartup(Boolean(value));
+      break;
+    case 'enableWatchers':
+      indexManager.setEnableWatchers(Boolean(value));
+      break;
+    case 'removeStopWords':
+      indexManager.setRemoveStopWords(Boolean(value));
+      break;
+    case 'enableStemming':
+      indexManager.setEnableStemming(Boolean(value));
+      break;
+    case 'enableLanguageDetection':
+      indexManager.setEnableLanguageDetection(Boolean(value));
+      break;
+    case 'indexMetadata':
+      indexManager.setIndexMetadata(Boolean(value));
+      break;
+    case 'maxFileSizeBytes':
+      indexManager.setMaxFileSizeBytes(Number(value));
+      break;
+    case 'enabledExtractors':
+      indexManager.setEnabledExtractors(value as ExtractorId[]);
+      break;
+    case 'indexingMode':
+      indexManager.setIndexingMode(value as IndexingMode);
+      break;
+    case 'scheduleInterval':
+      indexManager.setScheduleInterval(value as ScheduleInterval);
+      break;
+    case 'enableIndexLogging':
+      indexManager.setEnableIndexLogging(Boolean(value));
+      break;
+    case 'enableWatcherLogging':
+      indexManager.setEnableWatcherLogging(Boolean(value));
+      break;
+    case 'enableErrorLogging':
+      indexManager.setEnableErrorLogging(Boolean(value));
+      break;
+    case 'enableDebugLogging':
+      indexManager.setEnableDebugLogging(Boolean(value));
+      break;
+  }
+}
+
+function mapFailureRecord(record: IndexingFailureRecord): IndexingFailure {
+  return {
+    id: record.id,
+    path: record.path,
+    category: record.category,
+    message: record.message,
+    occurredAt: record.occurred_at,
+    retryCount: record.retry_count,
+    ignored: record.ignored === 1,
+  };
+}
+
+function mapIgnoreRuleRecord(record: IgnoreRuleRecord): IgnoreRule {
+  return {
+    id: record.id,
+    pattern: record.pattern,
+    type: record.type,
+    enabled: record.enabled === 1,
+    createdAt: record.created_at,
+  };
 }
