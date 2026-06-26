@@ -9,6 +9,9 @@ import {
 import type { Posting } from '../database/postings.js';
 import { getPostingsForTerm } from '../database/postings.js';
 import { getAllTerms, TermRecord } from '../database/terms.js';
+import { getBooleanSetting } from '../database/settings.js';
+import { SETTING_KEYS } from '../settings/keys.js';
+import { stemTerm } from '../language/stemmer.js';
 import { computeBm25Score, type Bm25Context } from './bm25.js';
 import { evaluateFilter } from './filters.js';
 import { findFuzzyMatches } from './fuzzySearch.js';
@@ -38,6 +41,7 @@ interface TermEvaluation {
   termTexts: string[];
   termIds: number[];
   postingsByTermId: Map<number, Posting[]>;
+  originalQueryTerm: string;
 }
 
 interface PhraseEvaluation {
@@ -53,31 +57,82 @@ interface FileMatchData {
   phrasePositions: number[];
 }
 
+const METADATA_FILTER_PREFIXES = [
+  { prefix: 'ext', full: 'extension:' },
+  { prefix: 'extension', full: 'extension:' },
+  { prefix: 'lang', full: 'language:' },
+  { prefix: 'language', full: 'language:' },
+  { prefix: 'auth', full: 'author:' },
+  { prefix: 'author', full: 'author:' },
+  { prefix: 'mod', full: 'modified:' },
+  { prefix: 'modified', full: 'modified:' },
+  { prefix: 'cre', full: 'created:' },
+  { prefix: 'created', full: 'created:' },
+  { prefix: 'fol', full: 'folder:' },
+  { prefix: 'folder', full: 'folder:' },
+  { prefix: 'siz', full: 'size:' },
+  { prefix: 'size', full: 'size:' },
+  { prefix: 'typ', full: 'type:' },
+  { prefix: 'type', full: 'type:' },
+];
+
 export class SearchEngine {
   private trie: Trie;
   private termCache: Map<string, TermRecord>;
   private rankingPipeline: RankingPipeline;
+  private stemToTerms: Map<string, Set<string>>;
 
   constructor() {
     this.trie = new Trie();
     this.termCache = new Map();
     this.rankingPipeline = new RankingPipeline();
+    this.stemToTerms = new Map();
   }
 
   rebuildIndex(): void {
     const terms = getAllTerms();
     this.termCache.clear();
     this.trie.clear();
+    this.stemToTerms.clear();
+
+    const stemmingEnabled = getBooleanSetting(
+      SETTING_KEYS.enableStemming,
+      false
+    );
+
     for (const term of terms) {
       this.trie.insert(term.term);
       this.termCache.set(term.term, term);
+
+      if (stemmingEnabled) {
+        const stem = stemTerm(term.term, 'eng');
+        if (stem && stem !== term.term) {
+          const set = this.stemToTerms.get(stem);
+          if (set) {
+            set.add(term.term);
+          } else {
+            this.stemToTerms.set(stem, new Set([term.term]));
+          }
+        }
+      }
     }
   }
 
   getSuggestions(prefix: string, limit = 10): string[] {
     if (!prefix || prefix.length === 0) return [];
+
     const normalized = prefix.toLowerCase();
-    return this.trie.find(normalized).slice(0, limit);
+
+    // Suggest metadata filter prefixes when the typed text matches one.
+    const filterSuggestions: string[] = [];
+    for (const { prefix: filterPrefix, full } of METADATA_FILTER_PREFIXES) {
+      if (filterPrefix.startsWith(normalized) && !filterSuggestions.includes(full)) {
+        filterSuggestions.push(full);
+      }
+    }
+
+    const termSuggestions = this.trie.find(normalized).slice(0, limit);
+    return [...filterSuggestions, ...termSuggestions].slice(0, limit);
   }
 
   async search(options: SearchOptions): Promise<SearchResponse> {
@@ -116,7 +171,11 @@ export class SearchEngine {
     }
 
     if (matchingFileIds.length === 0) {
-      return { results: [], totalCount: 0, durationMs: Math.round(performance.now() - startTime) };
+      return {
+        results: [],
+        totalCount: 0,
+        durationMs: Math.round(performance.now() - startTime),
+      };
     }
 
     const candidates = this.buildCandidates(
@@ -136,7 +195,7 @@ export class SearchEngine {
     const ranked = this.rankingPipeline.rank(candidates, rankingContext);
     const limited = ranked.slice(0, RESULT_LIMIT);
 
-    const results = await this.buildResults(limited, phraseEvaluations);
+    const results = await this.buildResults(limited, termEvaluations, phraseEvaluations);
 
     return {
       results,
@@ -148,7 +207,7 @@ export class SearchEngine {
   private applyScope(files: FileRecord[], folderIds?: number[]): FileRecord[] {
     if (!folderIds || folderIds.length === 0) return files;
 
-    const folders = getFolders(); // imported from database/index.js
+    const folders = getFolders();
     const selectedPaths = folders
       .filter((f) => folderIds.includes(f.id))
       .map((f) => f.path.toLowerCase());
@@ -182,16 +241,28 @@ export class SearchEngine {
   }
 
   private evaluateTerms(terms: QueryNode[], bm25Context: Bm25Context): TermEvaluation[] {
-    return terms.map((node) => {
+    return terms.map((node, index) => {
       if (node.type !== 'term') {
-        return { node, termTexts: [], termIds: [], postingsByTermId: new Map() };
+        return {
+          node,
+          termTexts: [],
+          termIds: [],
+          postingsByTermId: new Map(),
+          originalQueryTerm: '',
+        };
       }
       const { terms: expanded, termIds } = this.expandTerm(node.value);
       const postingsByTermId = new Map<number, Posting[]>();
       for (const termId of termIds) {
         postingsByTermId.set(termId, getPostingsForTerm(termId));
       }
-      return { node, termTexts: expanded, termIds, postingsByTermId };
+      return {
+        node,
+        termTexts: expanded,
+        termIds,
+        postingsByTermId,
+        originalQueryTerm: node.value,
+      };
     });
   }
 
@@ -352,13 +423,23 @@ export class SearchEngine {
 
   private async buildResults(
     candidates: CandidateResult[],
+    termEvaluations: TermEvaluation[],
     phraseEvaluations: PhraseEvaluation[]
   ): Promise<SearchResult[]> {
     const results: SearchResult[] = [];
     for (const candidate of candidates) {
+      // Include both expanded matched terms and original query terms so snippets
+      // can highlight words the user actually typed.
+      const snippetTerms = new Set<string>(candidate.matchedTerms);
+      for (const eval_ of termEvaluations) {
+        if (eval_.originalQueryTerm) {
+          snippetTerms.add(eval_.originalQueryTerm);
+        }
+      }
+
       const snippets = await generateSnippets(
         candidate.file.path,
-        Array.from(candidate.matchedTerms),
+        Array.from(snippetTerms),
         candidate.phrasePositions.length > 0 ? candidate.phrasePositions : undefined
       );
 
@@ -368,7 +449,7 @@ export class SearchEngine {
         filename: candidate.filename,
         size: candidate.file.size,
         modifiedTime: candidate.file.modified_time,
-        score: 0, // Score is internal to ranking pipeline now.
+        score: 0,
         snippets: snippets.map((s) => s.text),
         matchedTerms: Array.from(candidate.matchedTerms),
         phraseTerms: this.collectPhraseTerms(candidate, phraseEvaluations),
@@ -412,6 +493,26 @@ export class SearchEngine {
       if (record && !termIds.includes(record.id)) {
         terms.push(term);
         termIds.push(record.id);
+      }
+    }
+
+    // Stem expansion: include index terms that share the same stem.
+    const stemmingEnabled = getBooleanSetting(
+      SETTING_KEYS.enableStemming,
+      false
+    );
+    if (stemmingEnabled) {
+      const stem = stemTerm(queryTerm, 'eng');
+      const stemmedTerms = this.stemToTerms.get(stem);
+      if (stemmedTerms) {
+        for (const term of stemmedTerms) {
+          if (term === queryTerm) continue;
+          const record = this.termCache.get(term);
+          if (record && !termIds.includes(record.id)) {
+            terms.push(term);
+            termIds.push(record.id);
+          }
+        }
       }
     }
 

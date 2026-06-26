@@ -5,7 +5,12 @@ CREATE TABLE IF NOT EXISTS Files (
   size INTEGER NOT NULL,
   modified_time INTEGER NOT NULL,
   doc_length INTEGER NOT NULL,
-  indexed_at INTEGER NOT NULL
+  indexed_at INTEGER NOT NULL,
+  language TEXT,
+  content_hash TEXT,
+  author TEXT,
+  created_at INTEGER,
+  extension TEXT
 );
 
 CREATE TABLE IF NOT EXISTS Terms (

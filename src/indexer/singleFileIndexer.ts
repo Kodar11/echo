@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import path from 'path';
 import {
   deleteFileById,
   getFileByPath,
@@ -8,8 +9,11 @@ import {
   deletePostingsForFileReturningTerms,
   insertPosting,
 } from '../database/postings.js';
+import { getBooleanSetting } from '../database/settings.js';
 import { getOrCreateTerm } from '../database/terms.js';
 import { getExtractor, isSupportedFile } from '../file-extractors/registry.js';
+import { SETTING_KEYS } from '../settings/keys.js';
+import { computeFileHash } from './hash.js';
 import { tokenize } from './tokenizer.js';
 
 export async function indexSingleFile(filePath: string): Promise<boolean> {
@@ -29,32 +33,60 @@ export async function indexSingleFile(filePath: string): Promise<boolean> {
     return false;
   }
 
+  const detectLanguage = getBooleanSetting(SETTING_KEYS.enableLanguageDetection, true);
+  const removeStopWords = getBooleanSetting(SETTING_KEYS.removeStopWords, false);
+  const indexMetadata = getBooleanSetting(SETTING_KEYS.indexMetadata, true);
+
   const existing = getFileByPath(filePath);
+
+  // If size and mtime are unchanged and we already have a hash, skip re-indexing.
   if (
     existing &&
     existing.size === stats.size &&
-    existing.modified_time === stats.mtimeMs
+    existing.modified_time === stats.mtimeMs &&
+    existing.content_hash
   ) {
     return false;
   }
 
-  let text: string;
+  let contentHash: string | undefined;
   try {
-    text = await extractor.extract(filePath);
+    contentHash = await computeFileHash(filePath);
+  } catch (err) {
+    console.error(`Failed to hash ${filePath}:`, err);
+  }
+
+  let extracted;
+  try {
+    extracted = await extractor.extract(filePath);
   } catch (err) {
     console.error(`Failed to extract ${filePath}:`, err);
     return false;
   }
 
-  const { tokens, positions } = tokenize(text);
+  const { tokens, positions, language } = tokenize(extracted.text, {
+    detectLanguage,
+    removeStopWords,
+  });
   const docLength = tokens.length;
+
+  const metadata = indexMetadata
+    ? {
+        language,
+        contentHash,
+        author: extracted.author,
+        createdAt: extracted.createdAt,
+        extension: path.extname(filePath).toLowerCase() || null,
+      }
+    : { language, contentHash };
 
   const fileId = insertFile(
     filePath,
     stats.size,
     stats.mtimeMs,
     docLength,
-    Date.now()
+    Date.now(),
+    metadata
   );
 
   deletePostingsForFileReturningTerms(fileId);

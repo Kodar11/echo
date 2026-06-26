@@ -3,6 +3,7 @@ import fs from 'fs';
 import Database from 'better-sqlite3';
 import { getUserDataPath } from '../electron/pathResolver.js';
 import { SCHEMA_SQL } from './schema.js';
+import { runMigrations } from './migrations.js';
 
 let db: Database.Database | null = null;
 let overridePath: string | null = null;
@@ -30,6 +31,7 @@ export function getDatabase(): Database.Database {
     db = new Database(overridePath ?? getDatabasePath());
     db.pragma('journal_mode = WAL');
     db.exec(SCHEMA_SQL);
+    runMigrations(db);
   }
   return db;
 }

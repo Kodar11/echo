@@ -17,5 +17,6 @@ export const IPC_CHANNELS = {
   SELECT_FOLDER: 'selectFolder',
   GET_SETTINGS: 'getSettings',
   SET_SETTING: 'setSetting',
+  GET_DUPLICATES: 'getDuplicates',
   SEND_FRAME_ACTION: 'sendFrameAction',
 } as const;

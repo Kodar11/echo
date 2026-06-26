@@ -1,10 +1,14 @@
 import { useEffect } from 'react';
 import {
   Eye,
+  FileSearch,
+  Filter,
   Info,
+  Languages,
   Monitor,
   Moon,
   RefreshCw,
+  Search,
   Sun,
 } from 'lucide-react';
 import {
@@ -104,12 +108,57 @@ export function SettingsPage() {
         <section className="rounded-xl bg-(--surface) p-5">
           <div className="flex items-center gap-2.5">
             <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-(--panel) theme-text-secondary">
+              <Languages size={16} strokeWidth={1.6} />
+            </div>
+            <div>
+              <h2 className="text-sm font-medium theme-text">Search intelligence</h2>
+              <p className="text-xs theme-text-secondary">
+                Language-aware indexing and query expansion
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 space-y-3">
+            <SettingToggle
+              icon={Languages}
+              label="Detect language"
+              description="Identify English, Hindi, and Marathi documents"
+              checked={settings.enableLanguageDetection}
+              onChange={(checked) => setSetting('enableLanguageDetection', checked)}
+            />
+            <SettingToggle
+              icon={Filter}
+              label="Remove stop words"
+              description="Skip common words during indexing"
+              checked={settings.removeStopWords}
+              onChange={(checked) => setSetting('removeStopWords', checked)}
+            />
+            <SettingToggle
+              icon={Search}
+              label="Enable stemming"
+              description="Match words with the same English root (run/running)"
+              checked={settings.enableStemming}
+              onChange={(checked) => setSetting('enableStemming', checked)}
+            />
+            <SettingToggle
+              icon={FileSearch}
+              label="Index metadata"
+              description="Extract author, dates, language, and content hash"
+              checked={settings.indexMetadata}
+              onChange={(checked) => setSetting('indexMetadata', checked)}
+            />
+          </div>
+        </section>
+
+        <section className="rounded-xl bg-(--surface) p-5">
+          <div className="flex items-center gap-2.5">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-(--panel) theme-text-secondary">
               <Info size={16} strokeWidth={1.6} />
             </div>
             <div>
               <h2 className="text-sm font-medium theme-text">About Echo</h2>
               <p className="text-xs theme-text-secondary">
-                Version 0.3.0 — Milestone 3
+                Version 0.4.0 — Milestone 5
               </p>
             </div>
           </div>

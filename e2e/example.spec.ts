@@ -52,6 +52,9 @@ test('should navigate through sidebar pages', async () => {
   await mainPage.getByText('Statistics', { exact: true }).click();
   await expect(mainPage.getByText('Overview')).toBeVisible();
 
+  await mainPage.getByText('Duplicates', { exact: true }).click();
+  await expect(mainPage.getByText('No duplicates found')).toBeVisible();
+
   await mainPage.getByText('Settings', { exact: true }).click();
   await expect(
     mainPage.getByRole('heading', { name: 'Appearance' })

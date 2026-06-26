@@ -1,3 +1,5 @@
+import { normalizeText } from '../language/normalize.js';
+
 export type QueryNode =
   | TermNode
   | PhraseNode
@@ -206,18 +208,22 @@ function tokenize(input: string): Token[] {
     if (char === '"') {
       const end = normalized.indexOf('"', i + 1);
       if (end === -1) {
-        const value = normalized.slice(i + 1).trim();
+        const value = normalizeText(normalized.slice(i + 1).trim());
         if (value) {
-          tokens.push({ type: 'PHRASE', value, terms: value.split(/\s+/) });
+          tokens.push({
+            type: 'PHRASE',
+            value,
+            terms: value.split(/[^\p{L}\p{N}]+/u).filter(Boolean),
+          });
         }
         break;
       }
-      const value = normalized.slice(i + 1, end).trim();
+      const value = normalizeText(normalized.slice(i + 1, end).trim());
       if (value) {
         tokens.push({
           type: 'PHRASE',
           value,
-          terms: value.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean),
+          terms: value.split(/[^\p{L}\p{N}]+/u).filter(Boolean),
         });
       }
       i = end + 1;
@@ -266,7 +272,7 @@ function tokenize(input: string): Token[] {
       continue;
     }
 
-    tokens.push({ type: 'TERM', value: raw.toLowerCase() });
+    tokens.push({ type: 'TERM', value: normalizeText(raw) });
     i = j;
   }
 

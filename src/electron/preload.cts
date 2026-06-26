@@ -21,6 +21,7 @@ electron.contextBridge.exposeInMainWorld('electron', {
   selectFolder: () => ipcInvoke('selectFolder'),
   getSettings: () => ipcInvoke('getSettings'),
   setSetting: (input) => ipcInvoke('setSetting', input),
+  getDuplicates: () => ipcInvoke('getDuplicates'),
   sendFrameAction: (payload) => ipcSend('sendFrameAction', payload),
 } satisfies Window['electron']);
 

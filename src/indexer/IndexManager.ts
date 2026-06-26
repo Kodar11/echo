@@ -21,6 +21,7 @@ import {
 import { deleteAllPostings } from '../database/postings.js';
 import { getBooleanSetting, setBooleanSetting } from '../database/settings.js';
 import { deleteAllTerms, getTermCount } from '../database/terms.js';
+import { SETTING_KEYS } from '../settings/keys.js';
 import { searchEngine } from '../search/engine.js';
 import {
   IndexQueue,
@@ -57,11 +58,6 @@ export interface IndexState {
   queueLength: number;
   error: string | null;
 }
-
-const SETTINGS_KEYS = {
-  autoSyncOnStartup: 'auto_sync_on_startup',
-  enableWatchers: 'enable_watchers',
-};
 
 export class IndexManager {
   private queue: IndexQueue;
@@ -240,30 +236,82 @@ export class IndexManager {
   }
 
   getAutoSyncOnStartup(): boolean {
-    return getBooleanSetting(
-      SETTINGS_KEYS.autoSyncOnStartup,
-      true // default: enabled
-    );
+    return getBooleanSetting(SETTING_KEYS.autoSyncOnStartup, true);
   }
 
   setAutoSyncOnStartup(enabled: boolean): void {
-    setBooleanSetting(SETTINGS_KEYS.autoSyncOnStartup, enabled);
+    setBooleanSetting(SETTING_KEYS.autoSyncOnStartup, enabled);
   }
 
   getEnableWatchers(): boolean {
-    return getBooleanSetting(
-      SETTINGS_KEYS.enableWatchers,
-      true // default: enabled
-    );
+    return getBooleanSetting(SETTING_KEYS.enableWatchers, true);
   }
 
   setEnableWatchers(enabled: boolean): void {
-    setBooleanSetting(SETTINGS_KEYS.enableWatchers, enabled);
+    setBooleanSetting(SETTING_KEYS.enableWatchers, enabled);
     if (enabled) {
       this.startWatchers();
     } else {
       this.stopWatchers();
     }
+  }
+
+  getRemoveStopWords(): boolean {
+    return getBooleanSetting(SETTING_KEYS.removeStopWords, false);
+  }
+
+  setRemoveStopWords(enabled: boolean): void {
+    const changed = this.getRemoveStopWords() !== enabled;
+    setBooleanSetting(SETTING_KEYS.removeStopWords, enabled);
+    if (changed) {
+      this.triggerReindex();
+    }
+  }
+
+  getEnableStemming(): boolean {
+    return getBooleanSetting(SETTING_KEYS.enableStemming, false);
+  }
+
+  setEnableStemming(enabled: boolean): void {
+    const changed = this.getEnableStemming() !== enabled;
+    setBooleanSetting(SETTING_KEYS.enableStemming, enabled);
+    if (changed) {
+      this.triggerReindex();
+    }
+  }
+
+  getEnableLanguageDetection(): boolean {
+    return getBooleanSetting(SETTING_KEYS.enableLanguageDetection, true);
+  }
+
+  setEnableLanguageDetection(enabled: boolean): void {
+    const changed = this.getEnableLanguageDetection() !== enabled;
+    setBooleanSetting(SETTING_KEYS.enableLanguageDetection, enabled);
+    if (changed) {
+      this.triggerReindex();
+    }
+  }
+
+  getIndexMetadata(): boolean {
+    return getBooleanSetting(SETTING_KEYS.indexMetadata, true);
+  }
+
+  setIndexMetadata(enabled: boolean): void {
+    const changed = this.getIndexMetadata() !== enabled;
+    setBooleanSetting(SETTING_KEYS.indexMetadata, enabled);
+    if (changed) {
+      this.triggerReindex();
+    }
+  }
+
+  private triggerReindex(): void {
+    // Schedule a full reindex so the existing index stays consistent with the
+    // new language-processing settings.
+    setTimeout(() => {
+      this.startIndexing().catch((err) => {
+        console.error('Auto-reindex failed:', err);
+      });
+    }, 100);
   }
 
   private shouldRunStartupSync(): boolean {

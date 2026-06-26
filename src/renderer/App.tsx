@@ -4,13 +4,14 @@ import { FoldersPage } from './pages/FoldersPage.js';
 import { SearchPage } from './pages/SearchPage.js';
 import { SettingsPage } from './pages/SettingsPage.js';
 import { StatisticsPage } from './pages/StatisticsPage.js';
+import { DuplicatesPage } from './pages/DuplicatesPage.js';
 import { useIndexStore } from './stores/indexStore.js';
 import {
   listenToSystemThemeChanges,
   useThemeStore,
 } from './stores/themeStore.js';
 
-type Page = 'search' | 'folders' | 'statistics' | 'settings';
+type Page = 'search' | 'folders' | 'statistics' | 'duplicates' | 'settings';
 
 function App() {
   const [page, setPage] = useState<Page>('search');
@@ -58,6 +59,7 @@ function App() {
         {page === 'search' && <SearchPage />}
         {page === 'folders' && <FoldersPage />}
         {page === 'statistics' && <StatisticsPage />}
+        {page === 'duplicates' && <DuplicatesPage />}
         {page === 'settings' && <SettingsPage />}
       </main>
     </div>

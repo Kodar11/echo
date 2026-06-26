@@ -123,4 +123,39 @@ describe('parseQuery', () => {
       },
     });
   });
+
+  it('normalizes unicode terms', () => {
+    const result = parseQuery('café');
+    expect(result.root).toEqual({ type: 'term', value: 'cafe' });
+  });
+
+  it('parses author filter', () => {
+    const result = parseQuery('author:Tanmay');
+    expect(result.root).toEqual({
+      type: 'filter',
+      key: 'author',
+      operator: ':',
+      value: 'Tanmay',
+    });
+  });
+
+  it('parses language filter', () => {
+    const result = parseQuery('language:eng');
+    expect(result.root).toEqual({
+      type: 'filter',
+      key: 'language',
+      operator: ':',
+      value: 'eng',
+    });
+  });
+
+  it('parses created filter', () => {
+    const result = parseQuery('created>2024-01-01');
+    expect(result.root).toEqual({
+      type: 'filter',
+      key: 'created',
+      operator: '>',
+      value: '2024-01-01',
+    });
+  });
 });

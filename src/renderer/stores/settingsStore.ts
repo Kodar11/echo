@@ -10,6 +10,10 @@ interface SettingsState {
 const defaultSettings: AppSettings = {
   autoSyncOnStartup: true,
   enableWatchers: true,
+  removeStopWords: false,
+  enableStemming: false,
+  enableLanguageDetection: true,
+  indexMetadata: true,
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

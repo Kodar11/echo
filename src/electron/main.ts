@@ -14,6 +14,7 @@ import {
 import { indexManager } from '../indexer/IndexManager.js';
 import { IPC_CHANNELS } from '../ipc/channels.js';
 import { searchEngine } from '../search/engine.js';
+import { findDuplicateGroups } from '../search/duplicates.js';
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -34,6 +35,10 @@ app.on('ready', () => {
     mainWindow.loadFile(getUIPath());
   }
 
+  // Register IPC handlers before any potentially slow initialization so the
+  // renderer can query status as soon as it mounts.
+  setupIpcHandlers();
+
   indexManager.initialize();
 
   // Forward queue progress to renderer
@@ -46,7 +51,6 @@ app.on('ready', () => {
     );
   });
 
-  setupIpcHandlers();
   createMenu(mainWindow);
 });
 
@@ -156,6 +160,10 @@ function setupIpcHandlers() {
     return {
       autoSyncOnStartup: indexManager.getAutoSyncOnStartup(),
       enableWatchers: indexManager.getEnableWatchers(),
+      removeStopWords: indexManager.getRemoveStopWords(),
+      enableStemming: indexManager.getEnableStemming(),
+      enableLanguageDetection: indexManager.getEnableLanguageDetection(),
+      indexMetadata: indexManager.getIndexMetadata(),
     };
   });
 
@@ -164,11 +172,27 @@ function setupIpcHandlers() {
       indexManager.setAutoSyncOnStartup(value);
     } else if (key === 'enableWatchers') {
       indexManager.setEnableWatchers(value);
+    } else if (key === 'removeStopWords') {
+      indexManager.setRemoveStopWords(value);
+    } else if (key === 'enableStemming') {
+      indexManager.setEnableStemming(value);
+    } else if (key === 'enableLanguageDetection') {
+      indexManager.setEnableLanguageDetection(value);
+    } else if (key === 'indexMetadata') {
+      indexManager.setIndexMetadata(value);
     }
     return {
       autoSyncOnStartup: indexManager.getAutoSyncOnStartup(),
       enableWatchers: indexManager.getEnableWatchers(),
+      removeStopWords: indexManager.getRemoveStopWords(),
+      enableStemming: indexManager.getEnableStemming(),
+      enableLanguageDetection: indexManager.getEnableLanguageDetection(),
+      indexMetadata: indexManager.getIndexMetadata(),
     };
+  });
+
+  ipcMainHandle(IPC_CHANNELS.GET_DUPLICATES, () => {
+    return findDuplicateGroups();
   });
 
   ipcMainOn(IPC_CHANNELS.SEND_FRAME_ACTION, (payload) => {

@@ -62,11 +62,28 @@ type SearchResponse = {
   durationMs: number;
 };
 
+type DuplicateGroup = {
+  hash: string;
+  files: Array<{
+    id: number;
+    path: string;
+    size: number;
+    modifiedTime: number;
+  }>;
+  count: number;
+  totalSize: number;
+  wastedSpace: number;
+};
+
 type FrameWindowAction = 'CLOSE' | 'MAXIMIZE' | 'MINIMIZE';
 
 type AppSettings = {
   autoSyncOnStartup: boolean;
   enableWatchers: boolean;
+  removeStopWords: boolean;
+  enableStemming: boolean;
+  enableLanguageDetection: boolean;
+  indexMetadata: boolean;
 };
 
 type EventPayloadInputMapping = {
@@ -88,6 +105,7 @@ type EventPayloadInputMapping = {
   selectFolder: void;
   getSettings: void;
   setSetting: { key: keyof AppSettings; value: boolean };
+  getDuplicates: void;
   sendFrameAction: FrameWindowAction;
 };
 
@@ -110,6 +128,7 @@ type EventPayloadOutputMapping = {
   selectFolder: string | null;
   getSettings: AppSettings;
   setSetting: AppSettings;
+  getDuplicates: DuplicateGroup[];
   sendFrameAction: void;
 };
 
@@ -145,6 +164,7 @@ interface Window {
       key: keyof AppSettings;
       value: boolean;
     }) => Promise<AppSettings>;
+    getDuplicates: () => Promise<DuplicateGroup[]>;
     sendFrameAction: (payload: FrameWindowAction) => void;
   };
 }

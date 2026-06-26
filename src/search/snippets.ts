@@ -1,4 +1,5 @@
 import { getExtractor } from '../file-extractors/registry.js';
+import { normalizeText } from '../language/normalize.js';
 
 const MAX_SNIPPETS = 3;
 const SNIPPET_WINDOW = 80;
@@ -20,14 +21,15 @@ export async function generateSnippets(
 
   let text: string;
   try {
-    text = await extractor.extract(filePath);
+    const extracted = await extractor.extract(filePath);
+    text = extracted.text;
   } catch {
     return [];
   }
 
   if (!text) return [];
 
-  const normalizedTerms = matchedTerms.map((t) => t.toLowerCase());
+  const normalizedTerms = matchedTerms.map((t) => normalizeText(t));
   const positions = findMatchPositions(text, normalizedTerms, phraseMatchPositions);
 
   if (positions.length === 0) {
@@ -76,11 +78,11 @@ function findMatchPositions(
 }
 
 function getTokenPositions(text: string): { token: string; start: number }[] {
-  const regex = /[a-z0-9]+/gi;
+  const regex = /[\p{L}\p{N}\p{M}]+/gu;
   const positions: { token: string; start: number }[] = [];
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
-    positions.push({ token: match[0].toLowerCase(), start: match.index });
+    positions.push({ token: normalizeText(match[0]), start: match.index });
   }
   return positions;
 }
