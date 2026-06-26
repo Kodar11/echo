@@ -246,6 +246,27 @@ function setupIpcHandlers() {
     return undefined;
   });
 
+  ipcMainHandle(IPC_CHANNELS.GET_RECOVERY_RESULT, () => {
+    return indexManager.getRecoveryResult();
+  });
+
+  ipcMainHandle(IPC_CHANNELS.CLEAR_RECOVERY_RESULT, () => {
+    indexManager.clearRecoveryResult();
+    return undefined;
+  });
+
+  ipcMainHandle(IPC_CHANNELS.VERIFY_INDEX, () => {
+    return indexManager.verifyIndex();
+  });
+
+  ipcMainHandle(IPC_CHANNELS.REPAIR_INDEX, () => {
+    return indexManager.repairIndex();
+  });
+
+  ipcMainHandle(IPC_CHANNELS.RUN_MAINTENANCE, async (options) => {
+    return indexManager.runMaintenance(options ?? {});
+  });
+
   ipcMainOn(IPC_CHANNELS.SEND_FRAME_ACTION, (payload) => {
     const mainWindow = BrowserWindow.getFocusedWindow();
     if (!mainWindow) return;
@@ -283,6 +304,12 @@ function buildSettings(): AppSettings {
     enableWatcherLogging: indexManager.getEnableWatcherLogging(),
     enableErrorLogging: indexManager.getEnableErrorLogging(),
     enableDebugLogging: indexManager.getEnableDebugLogging(),
+    autoRecovery: indexManager.getAutoRecovery(),
+    transactionLogging: indexManager.getTransactionLogging(),
+    automaticMaintenance: indexManager.getAutomaticMaintenance(),
+    migrationBehavior: indexManager.getMigrationBehavior(),
+    recoveryBehavior: indexManager.getRecoveryBehavior(),
+    enableIntegrityCheckOnStartup: indexManager.getEnableIntegrityCheckOnStartup(),
   };
 }
 
@@ -332,6 +359,24 @@ function applySetting(
       break;
     case 'enableDebugLogging':
       indexManager.setEnableDebugLogging(Boolean(value));
+      break;
+    case 'autoRecovery':
+      indexManager.setAutoRecovery(Boolean(value));
+      break;
+    case 'transactionLogging':
+      indexManager.setTransactionLogging(Boolean(value));
+      break;
+    case 'automaticMaintenance':
+      indexManager.setAutomaticMaintenance(Boolean(value));
+      break;
+    case 'migrationBehavior':
+      indexManager.setMigrationBehavior(value as 'auto' | 'prompt' | 'block');
+      break;
+    case 'recoveryBehavior':
+      indexManager.setRecoveryBehavior(value as 'auto' | 'notify' | 'manual');
+      break;
+    case 'enableIntegrityCheckOnStartup':
+      indexManager.setEnableIntegrityCheckOnStartup(Boolean(value));
       break;
   }
 }

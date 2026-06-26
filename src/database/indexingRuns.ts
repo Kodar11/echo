@@ -1,6 +1,6 @@
 import { getDatabase } from './connection.js';
 
-export type IndexingRunStatus = 'completed' | 'error';
+export type IndexingRunStatus = 'in_progress' | 'completed' | 'failed';
 
 export interface IndexingRunRecord {
   id: number;
@@ -16,9 +16,9 @@ export function startIndexingRun(): number {
   const db = getDatabase();
   const result = db
     .prepare(
-      'INSERT INTO IndexingRuns (started_at, status) VALUES (?, ?)'
+      "INSERT INTO IndexingRuns (started_at, status) VALUES (?, 'in_progress')"
     )
-    .run(Date.now(), 'completed');
+    .run(Date.now());
   return Number(result.lastInsertRowid);
 }
 
@@ -43,9 +43,28 @@ export function failIndexingRun(
   const db = getDatabase();
   db.prepare(
     `UPDATE IndexingRuns
-     SET completed_at = ?, duration_ms = ?, status = 'error', error_message = ?
+     SET completed_at = ?, duration_ms = ?, status = 'failed', error_message = ?
      WHERE id = ?`
   ).run(Date.now(), durationMs, errorMessage, runId);
+}
+
+export function markRunFailed(
+  runId: number,
+  errorMessage: string
+): void {
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE IndexingRuns
+     SET completed_at = ?, duration_ms = COALESCE(duration_ms, 0), status = 'failed', error_message = ?
+     WHERE id = ?`
+  ).run(Date.now(), errorMessage, runId);
+}
+
+export function getInProgressRuns(): IndexingRunRecord[] {
+  const db = getDatabase();
+  return db
+    .prepare("SELECT * FROM IndexingRuns WHERE status = 'in_progress' ORDER BY started_at DESC")
+    .all() as IndexingRunRecord[];
 }
 
 export function getRecentIndexingRuns(limit = 20): IndexingRunRecord[] {

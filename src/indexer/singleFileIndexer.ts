@@ -11,20 +11,17 @@ import {
   deletePostingsForFileReturningTerms,
   insertPosting,
 } from '../database/postings.js';
-import {
-  getBooleanSetting,
-  getSetting,
-} from '../database/settings.js';
+import { getBooleanSetting, getSetting } from '../database/settings.js';
 import { getOrCreateTerm } from '../database/terms.js';
 import { extractorManager } from '../services/extractors/ExtractorManager.js';
 import { getLogger } from '../services/logger/logger.js';
+import { TransactionManager } from '../services/transaction/TransactionManager.js';
+import { getDatabase } from '../database/connection.js';
 import { SETTING_KEYS } from '../settings/keys.js';
 import { computeFileHash } from './hash.js';
 import { tokenize } from './tokenizer.js';
 
 export async function indexSingleFile(filePath: string): Promise<boolean> {
-  const maxFileSizeBytes = getMaxFileSizeBytes();
-
   if (!extractorManager.isSupportedFile(filePath)) {
     return false;
   }
@@ -33,6 +30,8 @@ export async function indexSingleFile(filePath: string): Promise<boolean> {
   if (!extractor) {
     return false;
   }
+
+  const maxFileSizeBytes = getMaxFileSizeBytes();
 
   let stats;
   try {
@@ -50,10 +49,6 @@ export async function indexSingleFile(filePath: string): Promise<boolean> {
     );
     return false;
   }
-
-  const detectLanguage = getBooleanSetting(SETTING_KEYS.enableLanguageDetection, true);
-  const removeStopWords = getBooleanSetting(SETTING_KEYS.removeStopWords, false);
-  const indexMetadata = getBooleanSetting(SETTING_KEYS.indexMetadata, true);
 
   const existing = getFileByPath(filePath);
 
@@ -87,6 +82,13 @@ export async function indexSingleFile(filePath: string): Promise<boolean> {
   }
 
   try {
+    const detectLanguage = getBooleanSetting(
+      SETTING_KEYS.enableLanguageDetection,
+      true
+    );
+    const removeStopWords = getBooleanSetting(SETTING_KEYS.removeStopWords, false);
+    const indexMetadata = getBooleanSetting(SETTING_KEYS.indexMetadata, true);
+
     const { tokens, positions, language } = tokenize(extracted.text, {
       detectLanguage,
       removeStopWords,
@@ -103,24 +105,39 @@ export async function indexSingleFile(filePath: string): Promise<boolean> {
         }
       : { language, contentHash };
 
-    const fileId = insertFile(
-      filePath,
-      stats.size,
-      stats.mtimeMs,
-      docLength,
-      Date.now(),
-      metadata
-    );
+    const transactionManager = new TransactionManager(getDatabase());
+    const fileId = transactionManager.run(() => {
+      // Remove any existing file and postings atomically before inserting the new
+      // record. This prevents orphaned postings when a file is re-indexed.
+      if (existing) {
+        deletePostingsForFileReturningTerms(existing.id);
+        deleteFileById(existing.id);
+      }
 
-    // Clear any previous failure for this file.
+      const newFileId = insertFile(
+        filePath,
+        stats.size,
+        stats.mtimeMs,
+        docLength,
+        Date.now(),
+        metadata
+      );
+
+      for (const [term, termPositions] of positions.entries()) {
+        const termId = getOrCreateTerm(term);
+        insertPosting(termId, newFileId, termPositions.length, termPositions);
+      }
+
+      return newFileId;
+    }, { name: `indexSingleFile:${path.basename(filePath)}` });
+
     clearIndexingFailure(filePath);
 
-    deletePostingsForFileReturningTerms(fileId);
-
-    for (const [term, termPositions] of positions.entries()) {
-      const termId = getOrCreateTerm(term);
-      insertPosting(termId, fileId, termPositions.length, termPositions);
-    }
+    getLogger().debug(
+      'index',
+      'singleFileIndexer',
+      `Indexed ${filePath} (fileId=${fileId})`
+    );
 
     return true;
   } catch (err) {
@@ -135,8 +152,12 @@ export function deleteSingleFile(filePath: string): boolean {
     return false;
   }
 
-  deletePostingsForFileReturningTerms(existing.id);
-  deleteFileById(existing.id);
+  const transactionManager = new TransactionManager(getDatabase());
+  transactionManager.run(() => {
+    deletePostingsForFileReturningTerms(existing.id);
+    deleteFileById(existing.id);
+  }, { name: `deleteSingleFile:${path.basename(filePath)}` });
+
   return true;
 }
 
@@ -153,16 +174,28 @@ function recordFailure(filePath: string, err: unknown): void {
 
 function categorizeError(message: string): string {
   const lower = message.toLowerCase();
-  if (lower.includes('permission') || lower.includes('eacces') || lower.includes('access denied')) {
+  if (
+    lower.includes('permission') ||
+    lower.includes('eacces') ||
+    lower.includes('access denied')
+  ) {
     return 'permission_denied';
   }
   if (lower.includes('password') || lower.includes('encrypted')) {
     return 'encrypted';
   }
-  if (lower.includes('corrupt') || lower.includes('invalid') || lower.includes('unable to deserialize')) {
+  if (
+    lower.includes('corrupt') ||
+    lower.includes('invalid') ||
+    lower.includes('unable to deserialize')
+  ) {
     return 'corrupted';
   }
-  if (lower.includes('locked') || lower.includes('eminuse') || lower.includes('resource busy')) {
+  if (
+    lower.includes('locked') ||
+    lower.includes('eminuse') ||
+    lower.includes('resource busy')
+  ) {
     return 'locked';
   }
   if (lower.includes('unsupported') || lower.includes('not supported')) {

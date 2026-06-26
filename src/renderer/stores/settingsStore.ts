@@ -25,6 +25,12 @@ const defaultSettings: AppSettings = {
   enableWatcherLogging: true,
   enableErrorLogging: true,
   enableDebugLogging: false,
+  autoRecovery: true,
+  transactionLogging: false,
+  automaticMaintenance: false,
+  migrationBehavior: 'auto',
+  recoveryBehavior: 'auto',
+  enableIntegrityCheckOnStartup: true,
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

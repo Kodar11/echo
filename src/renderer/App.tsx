@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { X } from 'lucide-react';
 import { Sidebar } from './components/Sidebar.js';
 import { FoldersPage } from './pages/FoldersPage.js';
 import { SearchPage } from './pages/SearchPage.js';
@@ -17,6 +18,7 @@ type Page = 'search' | 'folders' | 'statistics' | 'duplicates' | 'health' | 'bro
 
 function App() {
   const [page, setPage] = useState<Page>('search');
+  const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
   const theme = useThemeStore((state) => state.theme);
   const preference = useThemeStore((state) => state.preference);
   const syncWithSystem = useThemeStore((state) => state.syncWithSystem);
@@ -54,18 +56,45 @@ function App() {
     return () => unsubscribe();
   }, [setProgress]);
 
+  useEffect(() => {
+    window.electron.getRecoveryResult().then((result) => {
+      if (result?.recovered) {
+        setRecoveryMessage(result.message);
+      }
+    });
+  }, []);
+
+  const dismissRecovery = () => {
+    setRecoveryMessage(null);
+    window.electron.clearRecoveryResult();
+  };
+
   return (
-    <div className="flex h-screen w-screen overflow-hidden theme-bg theme-text">
-      <Sidebar currentPage={page} onNavigate={setPage} />
-      <main className="flex-1 overflow-hidden">
-        {page === 'search' && <SearchPage />}
-        {page === 'folders' && <FoldersPage />}
-        {page === 'statistics' && <StatisticsPage />}
-        {page === 'duplicates' && <DuplicatesPage />}
-        {page === 'health' && <IndexHealthPage />}
-        {page === 'broken' && <BrokenFilesPage />}
-        {page === 'settings' && <SettingsPage />}
-      </main>
+    <div className="flex h-screen w-screen flex-col overflow-hidden theme-bg theme-text">
+      {recoveryMessage && (
+        <div className="flex items-center justify-between border-b border-(--border) bg-(--surface) px-4 py-2">
+          <p className="text-xs theme-text-secondary">{recoveryMessage}</p>
+          <button
+            onClick={dismissRecovery}
+            className="rounded p-1 hover:bg-(--panel)"
+            aria-label="Dismiss recovery notice"
+          >
+            <X size={14} className="theme-text-secondary" />
+          </button>
+        </div>
+      )}
+      <div className="flex flex-1 overflow-hidden">
+        <Sidebar currentPage={page} onNavigate={setPage} />
+        <main className="flex-1 overflow-hidden">
+          {page === 'search' && <SearchPage />}
+          {page === 'folders' && <FoldersPage />}
+          {page === 'statistics' && <StatisticsPage />}
+          {page === 'duplicates' && <DuplicatesPage />}
+          {page === 'health' && <IndexHealthPage />}
+          {page === 'broken' && <BrokenFilesPage />}
+          {page === 'settings' && <SettingsPage />}
+        </main>
+      </div>
     </div>
   );
 }

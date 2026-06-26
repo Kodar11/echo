@@ -31,5 +31,10 @@ export const IPC_CHANNELS = {
   IMPORT_BACKUP: 'importBackup',
   VALIDATE_BACKUP: 'validateBackup',
   OPEN_LOG_FOLDER: 'openLogFolder',
+  GET_RECOVERY_RESULT: 'getRecoveryResult',
+  CLEAR_RECOVERY_RESULT: 'clearRecoveryResult',
+  VERIFY_INDEX: 'verifyIndex',
+  REPAIR_INDEX: 'repairIndex',
+  RUN_MAINTENANCE: 'runMaintenance',
   SEND_FRAME_ACTION: 'sendFrameAction',
 } as const;

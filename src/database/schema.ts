@@ -46,6 +46,11 @@ CREATE TABLE IF NOT EXISTS IndexMetadata (
   total_indexed_files INTEGER NOT NULL DEFAULT 0,
   total_indexed_terms INTEGER NOT NULL DEFAULT 0,
   ignored_files_count INTEGER NOT NULL DEFAULT 0,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  index_version INTEGER NOT NULL DEFAULT 1,
+  app_version TEXT,
+  created_at INTEGER,
+  last_migration_at INTEGER,
   error_message TEXT
 );
 
@@ -55,7 +60,7 @@ CREATE TABLE IF NOT EXISTS IndexingRuns (
   completed_at INTEGER,
   duration_ms INTEGER,
   files_indexed INTEGER NOT NULL DEFAULT 0,
-  status TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'in_progress',
   error_message TEXT
 );
 
@@ -82,9 +87,29 @@ CREATE TABLE IF NOT EXISTS IgnoreRules (
   created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS Migrations (
+  version INTEGER PRIMARY KEY,
+  name TEXT NOT NULL,
+  applied_at INTEGER NOT NULL,
+  checksum TEXT
+);
+
+CREATE TABLE IF NOT EXISTS IndexLock (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  owner TEXT NOT NULL,
+  acquired_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  context TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_terms_term ON Terms(term);
 CREATE INDEX IF NOT EXISTS idx_postings_term_id ON Postings(term_id);
 CREATE INDEX IF NOT EXISTS idx_postings_file_id ON Postings(file_id);
 CREATE INDEX IF NOT EXISTS idx_files_path ON Files(path);
 CREATE INDEX IF NOT EXISTS idx_indexing_runs_completed_at ON IndexingRuns(completed_at);
+CREATE INDEX IF NOT EXISTS idx_files_language ON Files(language);
+CREATE INDEX IF NOT EXISTS idx_files_content_hash ON Files(content_hash);
+CREATE INDEX IF NOT EXISTS idx_files_author ON Files(author);
+CREATE INDEX IF NOT EXISTS idx_files_created_at ON Files(created_at);
+CREATE INDEX IF NOT EXISTS idx_files_extension ON Files(extension);
 `;

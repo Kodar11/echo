@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { app } from 'electron';
-import { getDatabasePath } from '../database/connection.js';
+import { getDatabase, getDatabasePath } from '../database/connection.js';
 import {
   deleteAllFiles,
   getFileCount,
@@ -35,6 +35,11 @@ import { healthManager, type HealthStats } from '../services/health/HealthManage
 import { ignoreRuleManager, type IgnoreRuleRecord, type IgnoreRuleType } from '../services/ignore/IgnoreRuleManager.js';
 import { createLogger, getLogger, type LogCategory } from '../services/logger/logger.js';
 import { ScheduleManager, type IndexingMode, type ScheduleInterval } from '../services/scheduler/ScheduleManager.js';
+import { LockManager } from '../services/lock/LockManager.js';
+import { RecoveryManager } from '../services/recovery/RecoveryManager.js';
+import { IntegrityManager } from '../services/integrity/IntegrityManager.js';
+import { MaintenanceManager } from '../services/maintenance/MaintenanceManager.js';
+import { MigrationManager } from '../services/migration/MigrationManager.js';
 import {
   IndexQueue,
   type IndexQueueProgress,
@@ -76,6 +81,11 @@ export class IndexManager {
   private syncManager: SyncManager;
   private watcherManager: WatcherManager;
   private scheduleManager: ScheduleManager;
+  private lockManager: LockManager;
+  private recoveryManager: RecoveryManager;
+  private integrityManager: IntegrityManager;
+  private maintenanceManager: MaintenanceManager;
+  private migrationManager: MigrationManager;
   private currentRunId: number | null = null;
   private runStartTime = 0;
   private manualRunInProgress = false;
@@ -84,17 +94,27 @@ export class IndexManager {
   private watchersStarted = false;
   private unsubscribeQueue?: () => void;
   private loggerInitialized = false;
+  private recoveryResult: RecoveryResult | null = null;
+  private lockOwner: string | null = null;
 
   constructor() {
+    const database = getDatabase();
     this.queue = new IndexQueue({
       onIdle: () => this.handleQueueIdle(),
     });
     this.syncManager = new SyncManager(this.queue);
-    this.watcherManager = new WatcherManager(this.queue, this.syncManager);
+    this.watcherManager = new WatcherManager(this.queue, {
+      onBulkChange: () => this.requestIndexingSession('watcher'),
+    });
     this.scheduleManager = new ScheduleManager({
       onStartupSync: () =>
-        this.syncManager.sync({ trigger: 'scheduled' }).then(() => undefined),
+        this.requestIndexingSession('scheduled').then(() => undefined),
     });
+    this.lockManager = new LockManager(database);
+    this.recoveryManager = new RecoveryManager(database);
+    this.integrityManager = new IntegrityManager(database);
+    this.maintenanceManager = new MaintenanceManager(database);
+    this.migrationManager = new MigrationManager(database);
   }
 
   initialize(): void {
@@ -102,6 +122,37 @@ export class IndexManager {
     this.ensureMetadata();
     extractorManager.initialize();
     ignoreRuleManager.initialize();
+
+    // Run migrations before any indexing or recovery.
+    const migrationResult = this.migrationManager.migrate();
+    if (!migrationResult.success) {
+      getLogger().error(
+        'index',
+        'IndexManager',
+        `Database migration failed: ${migrationResult.error}`
+      );
+      setIndexingStatus('error', migrationResult.error ?? 'Migration failed');
+    }
+
+    // Run crash recovery before any indexing starts.
+    const autoRecovery = this.getAutoRecovery();
+    this.recoveryResult = this.recoveryManager.checkAndRecover(autoRecovery);
+    if (this.recoveryResult.recovered) {
+      this.engineNeedsRebuild = true;
+    }
+
+    // Optional startup integrity check.
+    if (this.getEnableIntegrityCheckOnStartup()) {
+      const integrityReport = this.integrityManager.verify();
+      if (!integrityReport.healthy) {
+        getLogger().warn(
+          'index',
+          'IndexManager',
+          `Startup integrity check found ${integrityReport.issues.length} issue(s)`
+        );
+      }
+    }
+
     this.loadIndex();
 
     this.unsubscribeQueue = this.queue.subscribe((progress) => {
@@ -176,13 +227,58 @@ export class IndexManager {
   async startIndexing(): Promise<void> {
     if (this.manualRunInProgress) return;
 
+    await this.requestIndexingSession('manual');
+  }
+
+  /**
+   * Requests an indexing session, serializing all sync triggers behind a single
+   * persistent lock. Returns true if the session was started, false if queued.
+   */
+  private async requestIndexingSession(trigger: string): Promise<boolean> {
+    const owner = `index:${trigger}:${Date.now()}`;
+
+    if (!this.lockManager.acquire(owner, { trigger })) {
+      getLogger().info(
+        'index',
+        'IndexManager',
+        `Indexing session for "${trigger}" queued behind active lock`
+      );
+      return false;
+    }
+
+    this.lockOwner = owner;
     this.stopWatchers();
     this.runStartTime = Date.now();
-    this.currentRunId = startIndexingRun();
-    this.manualRunInProgress = true;
+
+    if (!this.currentRunId) {
+      this.currentRunId = startIndexingRun();
+    }
+
+    if (trigger === 'manual') {
+      this.manualRunInProgress = true;
+    }
+
     setIndexingStatus('indexing');
 
-    await this.syncManager.sync({ trigger: 'manual' });
+    try {
+      await this.syncManager.sync({ trigger: trigger as 'manual' | 'startup' | 'scheduled' });
+      return true;
+    } catch (err) {
+      getLogger().error(
+        'index',
+        'IndexManager',
+        `Sync failed for "${trigger}": ${err instanceof Error ? err.message : String(err)}`
+      );
+      this.releaseIndexingLock();
+      throw err;
+    }
+  }
+
+  private releaseIndexingLock(): void {
+    if (this.lockOwner) {
+      this.lockManager.release(this.lockOwner);
+      this.lockOwner = null;
+    }
   }
 
   stopIndexing(): void {
@@ -197,6 +293,7 @@ export class IndexManager {
     this.manualRunInProgress = false;
     this.currentRunId = null;
     this.engineNeedsRebuild = true;
+    this.releaseIndexingLock();
 
     setIndexingStatus('indexed');
     this.rebuildSearchEngineIfNeeded(true);
@@ -212,6 +309,7 @@ export class IndexManager {
     this.manualRunInProgress = false;
     this.currentRunId = null;
     this.engineNeedsRebuild = false;
+    this.releaseIndexingLock();
 
     deleteAllPostings();
     deleteAllFiles();
@@ -475,6 +573,79 @@ export class IndexManager {
     return backupManager.validateBackup(sourcePath);
   }
 
+  // Reliability
+  getRecoveryResult(): RecoveryResult | null {
+    return this.recoveryResult;
+  }
+
+  clearRecoveryResult(): void {
+    this.recoveryResult = null;
+  }
+
+  verifyIndex(): IntegrityReport {
+    return this.integrityManager.verify();
+  }
+
+  repairIndex(): IntegrityReport {
+    return this.integrityManager.verifyAndRepair();
+  }
+
+  runMaintenance(options?: { vacuum?: boolean; analyze?: boolean }): MaintenanceResult {
+    return this.maintenanceManager.runMaintenance(options);
+  }
+
+  getAutoRecovery(): boolean {
+    return getBooleanSetting(SETTING_KEYS.autoRecovery, true);
+  }
+
+  setAutoRecovery(enabled: boolean): void {
+    setBooleanSetting(SETTING_KEYS.autoRecovery, enabled);
+  }
+
+  getTransactionLogging(): boolean {
+    return getBooleanSetting(SETTING_KEYS.transactionLogging, false);
+  }
+
+  setTransactionLogging(enabled: boolean): void {
+    setBooleanSetting(SETTING_KEYS.transactionLogging, enabled);
+  }
+
+  getAutomaticMaintenance(): boolean {
+    return getBooleanSetting(SETTING_KEYS.automaticMaintenance, false);
+  }
+
+  setAutomaticMaintenance(enabled: boolean): void {
+    setBooleanSetting(SETTING_KEYS.automaticMaintenance, enabled);
+  }
+
+  getMigrationBehavior(): 'auto' | 'prompt' | 'block' {
+    const raw = getSetting(SETTING_KEYS.migrationBehavior, 'auto');
+    if (raw === 'prompt' || raw === 'block') return raw;
+    return 'auto';
+  }
+
+  setMigrationBehavior(value: 'auto' | 'prompt' | 'block'): void {
+    setSetting(SETTING_KEYS.migrationBehavior, value);
+  }
+
+  getRecoveryBehavior(): 'auto' | 'notify' | 'manual' {
+    const raw = getSetting(SETTING_KEYS.recoveryBehavior, 'auto');
+    if (raw === 'notify' || raw === 'manual') return raw;
+    return 'auto';
+  }
+
+  setRecoveryBehavior(value: 'auto' | 'notify' | 'manual'): void {
+    setSetting(SETTING_KEYS.recoveryBehavior, value);
+  }
+
+  getEnableIntegrityCheckOnStartup(): boolean {
+    return getBooleanSetting(SETTING_KEYS.enableIntegrityCheckOnStartup, true);
+  }
+
+  setEnableIntegrityCheckOnStartup(enabled: boolean): void {
+    setBooleanSetting(SETTING_KEYS.enableIntegrityCheckOnStartup, enabled);
+  }
+
   private applyScheduleMode(): void {
     this.scheduleManager.stop();
     if (this.manualRunInProgress) return;
@@ -512,7 +683,7 @@ export class IndexManager {
 
   private runStartupSync(): void {
     setTimeout(() => {
-      this.syncManager.sync({ trigger: 'startup' }).catch((err) => {
+      this.requestIndexingSession('startup').catch((err) => {
         getLogger().error(
           'index',
           'IndexManager',
@@ -564,17 +735,23 @@ export class IndexManager {
   private handleQueueIdle(): void {
     const wasManualRun = this.manualRunInProgress;
 
-    if (this.manualRunInProgress && this.currentRunId !== null) {
+    if (this.currentRunId !== null) {
       const duration = Date.now() - this.runStartTime;
       const fileCount = getFileCount();
       const termCount = getTermCount();
 
-      completeIndexingRun(this.currentRunId, duration, fileCount);
-      recordIndexingCompleted(duration, fileCount, termCount);
-      this.manualRunInProgress = false;
+      if (this.manualRunInProgress) {
+        completeIndexingRun(this.currentRunId, duration, fileCount);
+        recordIndexingCompleted(duration, fileCount, termCount);
+      } else {
+        completeIndexingRun(this.currentRunId, duration, fileCount);
+      }
+
       this.currentRunId = null;
+      this.manualRunInProgress = false;
     }
 
+    this.releaseIndexingLock();
     setIndexingStatus('indexed');
 
     this.engineNeedsRebuild = true;

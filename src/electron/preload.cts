@@ -35,6 +35,11 @@ electron.contextBridge.exposeInMainWorld('electron', {
   importBackup: (input) => ipcInvoke('importBackup', input),
   validateBackup: (input) => ipcInvoke('validateBackup', input),
   openLogFolder: () => ipcInvoke('openLogFolder'),
+  getRecoveryResult: () => ipcInvoke('getRecoveryResult'),
+  clearRecoveryResult: () => ipcInvoke('clearRecoveryResult'),
+  verifyIndex: () => ipcInvoke('verifyIndex'),
+  repairIndex: () => ipcInvoke('repairIndex'),
+  runMaintenance: (input) => ipcInvoke('runMaintenance', input),
   sendFrameAction: (payload) => ipcSend('sendFrameAction', payload),
 } satisfies Window['electron']);
 

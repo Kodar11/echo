@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+  AlertTriangle,
   Archive,
   Bug,
   Database,
@@ -15,8 +16,10 @@ import {
   RefreshCw,
   Save,
   Search,
+  Shield,
   Sun,
   Upload,
+  Wrench,
 } from 'lucide-react';
 import {
   type ThemePreference,
@@ -60,6 +63,10 @@ export function SettingsPage() {
   } = useBackupStore();
   const [newRule, setNewRule] = useState('');
   const [customSize, setCustomSize] = useState('');
+  const [verifyReport, setVerifyReport] = useState<IntegrityReport | null>(null);
+  const [repairReport, setRepairReport] = useState<IntegrityReport | null>(null);
+  const [maintenanceResult, setMaintenanceResult] = useState<MaintenanceResult | null>(null);
+  const [isRunningMaintenance, setIsRunningMaintenance] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -102,6 +109,28 @@ export function SettingsPage() {
     const result = await window.electron.selectFile();
     if (result) {
       await importBackup(result);
+    }
+  };
+
+  const handleVerify = async () => {
+    setRepairReport(null);
+    const report = await window.electron.verifyIndex();
+    setVerifyReport(report);
+  };
+
+  const handleRepair = async () => {
+    setVerifyReport(null);
+    const report = await window.electron.repairIndex();
+    setRepairReport(report);
+  };
+
+  const handleMaintenance = async (options: { vacuum?: boolean }) => {
+    setIsRunningMaintenance(true);
+    try {
+      const result = await window.electron.runMaintenance(options);
+      setMaintenanceResult(result);
+    } finally {
+      setIsRunningMaintenance(false);
     }
   };
 
@@ -438,9 +467,192 @@ export function SettingsPage() {
 
         <section className="rounded-xl bg-(--surface) p-5">
           <SectionHeader
+            icon={Shield}
+            title="Advanced"
+            description="Reliability, maintenance, and recovery options"
+          />
+          <div className="mt-4 space-y-3">
+            <SettingToggle
+              icon={RefreshCw}
+              label="Automatic recovery"
+              description="Recover automatically after an interrupted indexing session"
+              checked={settings.autoRecovery}
+              onChange={(checked) => setSetting('autoRecovery', checked)}
+            />
+            <SettingToggle
+              icon={Bug}
+              label="Transaction logging"
+              description="Log transaction begin, commit, and rollback events"
+              checked={settings.transactionLogging}
+              onChange={(checked) => setSetting('transactionLogging', checked)}
+            />
+            <SettingToggle
+              icon={Wrench}
+              label="Automatic maintenance"
+              description="Run maintenance tasks automatically after indexing"
+              checked={settings.automaticMaintenance}
+              onChange={(checked) => setSetting('automaticMaintenance', checked)}
+            />
+            <SettingToggle
+              icon={Shield}
+              label="Integrity check on startup"
+              description="Verify database integrity when Echo starts"
+              checked={settings.enableIntegrityCheckOnStartup}
+              onChange={(checked) =>
+                setSetting('enableIntegrityCheckOnStartup', checked)
+              }
+            />
+
+            <div>
+              <label className="text-xs font-medium theme-text">
+                Migration behavior
+              </label>
+              <select
+                value={settings.migrationBehavior}
+                onChange={(e) =>
+                  setSetting(
+                    'migrationBehavior',
+                    e.target.value as 'auto' | 'prompt' | 'block'
+                  )
+                }
+                className="mt-1.5 w-full rounded-lg border border-(--border-strong) bg-(--panel) px-3 py-2 text-sm theme-text outline-none focus:border-(--accent)"
+              >
+                <option value="auto">Apply automatically</option>
+                <option value="prompt">Prompt before migrating</option>
+                <option value="block">Block until manual action</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs font-medium theme-text">
+                Recovery behavior
+              </label>
+              <select
+                value={settings.recoveryBehavior}
+                onChange={(e) =>
+                  setSetting(
+                    'recoveryBehavior',
+                    e.target.value as 'auto' | 'notify' | 'manual'
+                  )
+                }
+                className="mt-1.5 w-full rounded-lg border border-(--border-strong) bg-(--panel) px-3 py-2 text-sm theme-text outline-none focus:border-(--accent)"
+              >
+                <option value="auto">Recover automatically</option>
+                <option value="notify">Notify and wait</option>
+                <option value="manual">Manual only</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="mt-5 flex flex-wrap gap-3">
+            <button
+              onClick={handleVerify}
+              className="rounded-lg border border-(--border) bg-(--panel) px-3 py-2 text-xs font-medium theme-text transition hover:bg-(--surface)"
+            >
+              Verify Index
+            </button>
+            <button
+              onClick={handleRepair}
+              className="rounded-lg bg-(--accent) px-3 py-2 text-xs font-medium text-white transition hover:bg-(--accent-hover)"
+            >
+              Repair Index
+            </button>
+            <button
+              onClick={() => handleMaintenance({})}
+              disabled={isRunningMaintenance}
+              className="rounded-lg border border-(--border) bg-(--panel) px-3 py-2 text-xs font-medium theme-text transition hover:bg-(--surface) disabled:opacity-50"
+            >
+              {isRunningMaintenance ? 'Running…' : 'Run Maintenance'}
+            </button>
+            <button
+              onClick={() => handleMaintenance({ vacuum: true })}
+              disabled={isRunningMaintenance}
+              className="rounded-lg border border-(--border) bg-(--panel) px-3 py-2 text-xs font-medium theme-text transition hover:bg-(--surface) disabled:opacity-50"
+            >
+              Run VACUUM
+            </button>
+          </div>
+
+          {verifyReport && (
+            <div className="mt-4 rounded-lg border border-(--border) bg-(--panel) p-3">
+              <div className="flex items-center gap-2">
+                {verifyReport.healthy ? (
+                  <>
+                    <Shield size={14} className="text-green-600" />
+                    <span className="text-xs font-medium text-green-600">
+                      Index is healthy
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <AlertTriangle size={14} className="text-yellow-600" />
+                    <span className="text-xs font-medium text-yellow-600">
+                      {verifyReport.issues.length} issue(s) found
+                    </span>
+                  </>
+                )}
+              </div>
+              {!verifyReport.healthy && (
+                <ul className="mt-2 space-y-1">
+                  {verifyReport.issues.map((issue, i) => (
+                    <li key={i} className="text-xs theme-text-secondary">
+                      {issue.description}
+                      {issue.details && (
+                        <span className="theme-text-tertiary"> — {issue.details}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          {repairReport && (
+            <div className="mt-4 rounded-lg border border-(--border) bg-(--panel) p-3">
+              <div className="flex items-center gap-2">
+                <Wrench size={14} className="text-(--accent)" />
+                <span className="text-xs font-medium theme-text">
+                  {repairReport.issues.length > 0
+                    ? `Repair attempted on ${repairReport.issues.length} issue(s)`
+                    : 'No issues to repair'}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {maintenanceResult && (
+            <div className="mt-4 rounded-lg border border-(--border) bg-(--panel) p-3">
+              <div className="flex items-center gap-2">
+                {maintenanceResult.success ? (
+                  <Shield size={14} className="text-green-600" />
+                ) : (
+                  <AlertTriangle size={14} className="text-yellow-600" />
+                )}
+                <span className="text-xs font-medium theme-text">
+                  {maintenanceResult.success
+                    ? 'Maintenance complete'
+                    : 'Maintenance completed with warnings'}
+                </span>
+              </div>
+              <ul className="mt-2 space-y-1">
+                {maintenanceResult.operations.map((op) => (
+                  <li key={op.name} className="text-xs theme-text-secondary">
+                    {op.name}: {op.success ? 'ok' : 'failed'}
+                    {op.message && (
+                      <span className="theme-text-tertiary"> — {op.message}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
+
+        <section className="rounded-xl bg-(--surface) p-5">
+          <SectionHeader
             icon={Info}
             title="About Echo"
-            description="Version 0.5.0 — Milestone 6"
+            description="Version 0.6.0 — Milestone 7"
           />
           <p className="mt-4 text-xs leading-relaxed theme-text-secondary">
             Echo is a local desktop search engine. Your files are indexed and

@@ -3,7 +3,9 @@ import type { FolderRecord } from '../database/folders.js';
 import { ignoreRuleManager } from '../services/ignore/IgnoreRuleManager.js';
 import { getLogger } from '../services/logger/logger.js';
 import type { IndexQueue, IndexTask } from './IndexQueue.js';
-import type { SyncManager } from './SyncManager.js';
+export interface WatcherCallbacks {
+  onBulkChange?: () => void;
+}
 
 const DEBOUNCE_MS = 300;
 
@@ -14,7 +16,7 @@ export class WatcherManager {
 
   constructor(
     private queue: IndexQueue,
-    private syncManager: SyncManager
+    private callbacks: WatcherCallbacks = {}
   ) {}
 
   start(folders: FolderRecord[]): void {
@@ -74,13 +76,9 @@ export class WatcherManager {
 
   private onUnlinkDir(_dirPath: string): void {
     // Watchers can miss bulk deletes, so schedule a full sync to clean up.
-    this.syncManager.sync({ trigger: 'manual' }).catch((err) => {
-      getLogger().error(
-        'watcher',
-        'WatcherManager',
-        `Sync failed: ${err instanceof Error ? err.message : String(err)}`
-      );
-    });
+    if (this.callbacks.onBulkChange) {
+      this.callbacks.onBulkChange();
+    }
   }
 
   private scheduleFlush(): void {

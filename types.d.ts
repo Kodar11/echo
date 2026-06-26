@@ -104,6 +104,37 @@ type IndexingFailure = {
   ignored: boolean;
 };
 
+type RecoveryResult = {
+  recovered: boolean;
+  interruptedRuns: number;
+  partialFiles: number;
+  message: string;
+};
+
+type IntegrityIssue = {
+  type: 'orphan_term' | 'orphan_posting' | 'missing_file' | 'duplicate_metadata' | 'invalid_metadata';
+  description: string;
+  details?: string;
+};
+
+type IntegrityReport = {
+  healthy: boolean;
+  issues: IntegrityIssue[];
+  repaired: boolean;
+};
+
+type MaintenanceOperation = {
+  name: string;
+  success: boolean;
+  durationMs: number;
+  message?: string;
+};
+
+type MaintenanceResult = {
+  success: boolean;
+  operations: MaintenanceOperation[];
+};
+
 type IgnoreRule = {
   id: number;
   pattern: string;
@@ -135,6 +166,12 @@ type AppSettings = {
   enableWatcherLogging: boolean;
   enableErrorLogging: boolean;
   enableDebugLogging: boolean;
+  autoRecovery: boolean;
+  transactionLogging: boolean;
+  automaticMaintenance: boolean;
+  migrationBehavior: 'auto' | 'prompt' | 'block';
+  recoveryBehavior: 'auto' | 'notify' | 'manual';
+  enableIntegrityCheckOnStartup: boolean;
 };
 
 type EventPayloadInputMapping = {
@@ -170,6 +207,11 @@ type EventPayloadInputMapping = {
   importBackup: { sourcePath: string };
   validateBackup: { sourcePath: string };
   openLogFolder: void;
+  getRecoveryResult: void;
+  clearRecoveryResult: void;
+  verifyIndex: void;
+  repairIndex: void;
+  runMaintenance: { vacuum?: boolean; analyze?: boolean };
   sendFrameAction: FrameWindowAction;
 };
 
@@ -206,6 +248,11 @@ type EventPayloadOutputMapping = {
   importBackup: void;
   validateBackup: { valid: boolean; error?: string };
   openLogFolder: void;
+  getRecoveryResult: RecoveryResult | null;
+  clearRecoveryResult: void;
+  verifyIndex: IntegrityReport;
+  repairIndex: IntegrityReport;
+  runMaintenance: MaintenanceResult;
   sendFrameAction: void;
 };
 
@@ -266,6 +313,14 @@ interface Window {
       sourcePath: string;
     }) => Promise<{ valid: boolean; error?: string }>;
     openLogFolder: () => Promise<void>;
+    getRecoveryResult: () => Promise<RecoveryResult | null>;
+    clearRecoveryResult: () => Promise<void>;
+    verifyIndex: () => Promise<IntegrityReport>;
+    repairIndex: () => Promise<IntegrityReport>;
+    runMaintenance: (input: {
+      vacuum?: boolean;
+      analyze?: boolean;
+    }) => Promise<MaintenanceResult>;
     sendFrameAction: (payload: FrameWindowAction) => void;
   };
 }

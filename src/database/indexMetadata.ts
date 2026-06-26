@@ -17,6 +17,11 @@ export interface IndexMetadataRecord {
   total_indexed_files: number;
   total_indexed_terms: number;
   ignored_files_count: number;
+  schema_version: number;
+  index_version: number;
+  app_version: string | null;
+  created_at: number | null;
+  last_migration_at: number | null;
   error_message: string | null;
 }
 
@@ -121,6 +126,54 @@ export function setIgnoredFilesCount(count: number): void {
 
 export function getIgnoredFilesCount(): number {
   return getIndexMetadata().ignored_files_count;
+}
+
+export function getSchemaVersion(): number {
+  return getIndexMetadata().schema_version;
+}
+
+export function setSchemaVersion(version: number): void {
+  const db = getDatabase();
+  db.prepare(
+    `INSERT OR IGNORE INTO IndexMetadata (id, status) VALUES (1, 'never_indexed')`
+  ).run();
+  db.prepare(
+    `UPDATE IndexMetadata SET schema_version = ?, last_migration_at = ? WHERE id = 1`
+  ).run(version, Date.now());
+}
+
+export function getIndexVersion(): number {
+  return getIndexMetadata().index_version;
+}
+
+export function setIndexVersion(version: number): void {
+  const db = getDatabase();
+  db.prepare(
+    `INSERT OR IGNORE INTO IndexMetadata (id, status) VALUES (1, 'never_indexed')`
+  ).run();
+  db.prepare('UPDATE IndexMetadata SET index_version = ? WHERE id = 1').run(
+    version
+  );
+}
+
+export function setAppVersion(version: string): void {
+  const db = getDatabase();
+  db.prepare(
+    `INSERT OR IGNORE INTO IndexMetadata (id, status) VALUES (1, 'never_indexed')`
+  ).run();
+  db.prepare('UPDATE IndexMetadata SET app_version = ? WHERE id = 1').run(
+    version
+  );
+}
+
+export function setIndexCreatedAt(timestamp: number): void {
+  const db = getDatabase();
+  db.prepare(
+    `INSERT OR IGNORE INTO IndexMetadata (id, status) VALUES (1, 'never_indexed')`
+  ).run();
+  db.prepare(
+    'UPDATE IndexMetadata SET created_at = ? WHERE id = 1 AND created_at IS NULL'
+  ).run(timestamp);
 }
 
 function computeAverageDuration(durationMs: number): number {
