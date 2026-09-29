@@ -1,139 +1,166 @@
-import { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
-import { Sidebar } from './components/Sidebar.js';
-import { TitleBar } from './components/TitleBar.js';
-import { FoldersPage } from './pages/FoldersPage.js';
+import { useEffect, useLayoutEffect } from 'react';
+import { TitleBar } from './components/shell/TitleBar.js';
+import { Toaster } from './components/ui/Toaster.js';
+import { plural } from './lib/format.js';
+import { LibraryPage } from './pages/LibraryPage.js';
 import { SearchPage } from './pages/SearchPage.js';
 import { SettingsPage } from './pages/SettingsPage.js';
-import { StatisticsPage } from './pages/StatisticsPage.js';
-import { DuplicatesPage } from './pages/DuplicatesPage.js';
-import { IndexHealthPage } from './pages/IndexHealthPage.js';
-import { BrokenFilesPage } from './pages/BrokenFilesPage.js';
+import { useFailuresStore } from './stores/failuresStore.js';
+import { useFoldersStore } from './stores/foldersStore.js';
 import { useIndexStore } from './stores/indexStore.js';
+import { focusSearch, useNavStore } from './stores/navStore.js';
+import { useSearchStore } from './stores/searchStore.js';
 import { useSettingsStore } from './stores/settingsStore.js';
-import {
-  listenToSystemThemeChanges,
-  useThemeStore,
-} from './stores/themeStore.js';
-import { IconButton } from './components/ui/IconButton.js';
+import { listenToSystemThemeChanges, useThemeStore } from './stores/themeStore.js';
+import { toast } from './stores/toastStore.js';
 
-type Page = 'search' | 'folders' | 'statistics' | 'duplicates' | 'health' | 'broken' | 'settings';
+/** Applies the resolved theme to the document and the native caption buttons. */
+function useThemeSync() {
+  const theme = useThemeStore((s) => s.theme);
+  const preference = useThemeStore((s) => s.preference);
+  const initializeTheme = useThemeStore((s) => s.initializeFromSettings);
+  const syncWithSystem = useThemeStore((s) => s.syncWithSystem);
 
-function App() {
-  const [page, setPage] = useState<Page>('search');
-  const [recoveryMessage, setRecoveryMessage] = useState<string | null>(null);
-
-  const theme = useThemeStore((state) => state.theme);
-  const preference = useThemeStore((state) => state.preference);
-  const initializeTheme = useThemeStore((state) => state.initializeFromSettings);
-  const syncWithSystem = useThemeStore((state) => state.syncWithSystem);
-
-  const settings = useSettingsStore((state) => state.settings);
-  const loadSettings = useSettingsStore((state) => state.loadSettings);
-  const setSetting = useSettingsStore((state) => state.setSetting);
-
-  const setProgress = useIndexStore((state) => state.setProgress);
-
-  // Initialize settings and theme on mount.
   useEffect(() => {
-    loadSettings();
-    initializeTheme();
-  }, [loadSettings, initializeTheme]);
+    void initializeTheme();
+  }, [initializeTheme]);
 
-  // Apply theme to <html> whenever it changes.
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
+  useLayoutEffect(() => {
+    const root = document.documentElement;
+    // Switch instantly: suppress component transitions for one frame.
+    root.classList.add('theme-switching');
+    root.dataset.theme = theme;
+    window.electron.setTitleBarTheme?.(theme);
+    const frame = requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove('theme-switching')));
+    return () => cancelAnimationFrame(frame);
   }, [theme]);
 
-  // Listen to system theme changes when preference is "system".
   useEffect(() => {
     if (preference !== 'system') return;
-    return listenToSystemThemeChanges(() => {
-      syncWithSystem();
-    });
+    return listenToSystemThemeChanges(() => syncWithSystem());
   }, [preference, syncWithSystem]);
+}
 
-  // Global keyboard shortcuts.
+/**
+ * Keeps renderer state in step with the backend: live progress events,
+ * refreshed counts and search results when a run ends, and a small number of
+ * meaningful notifications.
+ */
+function useIndexingLifecycle() {
+  useEffect(() => {
+    const index = useIndexStore.getState();
+    void index.loadStatus();
+    void index.loadStatistics();
+    void index.loadProgress();
+    void useFoldersStore.getState().loadFolders();
+    void useFailuresStore.getState().loadFailures();
+
+    const unsubscribe = window.electron.subscribeIndexingProgress((progress) => {
+      const previous = useIndexStore.getState().progress;
+      useIndexStore.getState().setProgress(progress);
+
+      const started = previous.status !== 'running' && progress.status === 'running';
+      const finished = previous.status === 'running' && progress.status === 'idle';
+      if (started) void useFoldersStore.getState().loadFolders();
+      if (finished) void onRunFinished(progress);
+    });
+
+    window.electron.getRecoveryResult().then((result) => {
+      if (!result?.recovered) return;
+      toast({ tone: 'neutral', title: 'Echo recovered from an interrupted session', description: result.message }, 8000);
+      void window.electron.clearRecoveryResult();
+    });
+
+    return unsubscribe;
+  }, []);
+}
+
+async function onRunFinished(progress: IndexingProgress) {
+  await Promise.all([
+    useFoldersStore.getState().loadFolders(),
+    useIndexStore.getState().loadStatus(),
+    useIndexStore.getState().loadStatistics(),
+  ]);
+  useSearchStore.getState().refresh();
+  void useFailuresStore.getState().loadFailures();
+
+  // Background runs (startup, watcher, schedule) finish silently when all is well.
+  const userInitiated = progress.trigger === 'manual' || progress.trigger === 'folders';
+  const { lastRunFailed } = useIndexStore.getState().status;
+  const viewDetails = { label: 'View details', onClick: () => useNavStore.getState().openSettings('diagnostics') };
+
+  switch (progress.lastOutcome) {
+    case 'completed_with_errors':
+      toast(
+        {
+          tone: 'warning',
+          title: lastRunFailed > 0 ? `${plural(lastRunFailed, 'file')} couldn’t be indexed` : 'Some files couldn’t be indexed',
+          description: 'Everything else is searchable.',
+          action: viewDetails,
+        },
+        7000
+      );
+      break;
+    case 'failed':
+      toast({ tone: 'error', title: 'Indexing didn’t finish', description: 'Try syncing your library again.', action: viewDetails }, 7000);
+      break;
+    case 'completed':
+      if (userInitiated && progress.indexedFiles > 0) {
+        toast({ tone: 'success', title: 'Library is up to date', description: `${plural(progress.indexedFiles, 'file')} indexed.` });
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+function useGlobalShortcuts() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      const isModifier = e.metaKey || e.ctrlKey;
-
-      if (isModifier && e.key.toLowerCase() === 'k') {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod || e.altKey) return;
+      const nav = useNavStore.getState();
+      const key = e.key.toLowerCase();
+      if (key === 'k' || key === 'f') {
         e.preventDefault();
-        setPage('search');
-        setTimeout(() => {
-          document.dispatchEvent(new CustomEvent('echo:focus-search'));
-        }, 0);
-      } else if (isModifier && e.key === '\\') {
+        focusSearch();
+      } else if (key === '1') {
         e.preventDefault();
-        const current = useSettingsStore.getState().settings.sidebarCollapsed;
-        useSettingsStore.getState().setSetting('sidebarCollapsed', !current);
+        focusSearch();
+      } else if (key === '2') {
+        e.preventDefault();
+        nav.navigate('library');
+      } else if (key === ',' || key === '3') {
+        e.preventDefault();
+        nav.openSettings();
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, []);
+}
+
+function App() {
+  const page = useNavStore((s) => s.page);
+  const loadSettings = useSettingsStore((s) => s.loadSettings);
+
+  useThemeSync();
+  useIndexingLifecycle();
+  useGlobalShortcuts();
 
   useEffect(() => {
-    const unsubscribe = window.electron.subscribeIndexingProgress((progress) => {
-      setProgress(progress);
-    });
-    return () => unsubscribe();
-  }, [setProgress]);
-
-  useEffect(() => {
-    window.electron.getRecoveryResult().then((result) => {
-      if (result?.recovered) {
-        setRecoveryMessage(result.message);
-      }
-    });
-  }, []);
-
-  const dismissRecovery = () => {
-    setRecoveryMessage(null);
-    window.electron.clearRecoveryResult();
-  };
-
-  const toggleSidebar = () => {
-    setSetting('sidebarCollapsed', !settings.sidebarCollapsed);
-  };
+    void loadSettings();
+  }, [loadSettings]);
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden theme-bg theme-text">
-      <TitleBar
-        sidebarCollapsed={settings.sidebarCollapsed}
-        onToggleSidebar={toggleSidebar}
-      />
-
-      {recoveryMessage && (
-        <div className="flex items-center justify-between gap-4 border-b border-(--border) bg-(--surface) px-4 py-2.5">
-          <p className="text-xs theme-text-secondary">{recoveryMessage}</p>
-          <IconButton
-            onClick={dismissRecovery}
-            aria-label="Dismiss recovery notice"
-            className="shrink-0"
-          >
-            <X size={14} />
-          </IconButton>
-        </div>
-      )}
-
-      <div className="flex flex-1 overflow-hidden">
-        <Sidebar
-          currentPage={page}
-          onNavigate={setPage}
-          collapsed={settings.sidebarCollapsed}
-        />
-        <main className="flex-1 overflow-hidden">
-          {page === 'search' && <SearchPage />}
-          {page === 'folders' && <FoldersPage />}
-          {page === 'statistics' && <StatisticsPage />}
-          {page === 'duplicates' && <DuplicatesPage />}
-          {page === 'health' && <IndexHealthPage />}
-          {page === 'broken' && <BrokenFilesPage />}
-          {page === 'settings' && <SettingsPage />}
-        </main>
-      </div>
+    <div className="flex h-screen w-screen flex-col overflow-hidden bg-canvas text-fg">
+      <TitleBar />
+      <main key={page} className="animate-fade-in relative min-h-0 flex-1">
+        {page === 'search' && <SearchPage />}
+        {page === 'library' && <LibraryPage />}
+        {page === 'settings' && <SettingsPage />}
+      </main>
+      <Toaster />
     </div>
   );
 }

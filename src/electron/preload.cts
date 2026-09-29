@@ -42,6 +42,7 @@ electron.contextBridge.exposeInMainWorld('electron', {
   repairIndex: () => ipcInvoke('repairIndex'),
   runMaintenance: (input) => ipcInvoke('runMaintenance', input),
   sendFrameAction: (payload) => ipcSend('sendFrameAction', payload),
+  setTitleBarTheme: (theme) => ipcSend('setTitleBarTheme', theme),
   getWindowState: () => ipcInvoke('getWindowState'),
   subscribeWindowState: (callback) =>
     ipcOn('subscribeWindowState', (state) => callback(state)),

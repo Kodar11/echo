@@ -1,82 +1,66 @@
-import { Check, ChevronDown } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import clsx from 'clsx';
+import { ChevronDown } from 'lucide-react';
+import { Menu } from './Menu.js';
 
-interface SelectOption {
-  value: string;
+interface SelectOption<T extends string> {
+  value: T;
   label: string;
 }
 
-interface SelectProps {
-  value: string;
-  options: SelectOption[];
-  onChange: (value: string) => void;
-  placeholder?: string;
+interface SelectProps<T extends string> {
+  value: T;
+  options: SelectOption<T>[];
+  onChange: (value: T) => void;
+  ariaLabel: string;
   disabled?: boolean;
+  /** 'field' = bordered control; 'inline' = quiet text trigger. */
+  appearance?: 'field' | 'inline';
   className?: string;
+  width?: number;
 }
 
-export function Select({
+export function Select<T extends string>({
   value,
   options,
   onChange,
-  placeholder = 'Select...',
+  ariaLabel,
   disabled,
-  className = '',
-}: SelectProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const selected = options.find((opt) => opt.value === value);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (!containerRef.current?.contains(e.target as Node)) {
-        setIsOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, []);
-
+  appearance = 'field',
+  className,
+  width,
+}: SelectProps<T>) {
+  const selected = options.find((o) => o.value === value);
   return (
-    <div ref={containerRef} className={`relative ${className}`}>
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => setIsOpen(!isOpen)}
-        className="flex h-10 w-full items-center justify-between rounded-lg border border-(--border-strong) bg-(--panel) px-3 text-sm theme-text transition-colors focus:border-(--accent) focus-ring disabled:opacity-50"
-      >
-        <span className={selected ? 'theme-text' : 'theme-text-tertiary'}>
-          {selected?.label ?? placeholder}
-        </span>
-        <ChevronDown
-          size={14}
-          className={`theme-text-tertiary transition-transform ${
-            isOpen ? 'rotate-180' : ''
-          }`}
-        />
-      </button>
-
-      {isOpen && (
-        <ul className="absolute z-50 mt-1 max-h-60 w-full overflow-auto rounded-lg border border-(--border) bg-(--surface) py-1 shadow-lg">
-          {options.map((option) => (
-            <li key={option.value}>
-              <button
-                type="button"
-                onClick={() => {
-                  onChange(option.value);
-                  setIsOpen(false);
-                }}
-                className="flex w-full items-center justify-between px-3 py-2 text-left text-sm theme-text transition-colors hover:bg-(--panel)"
-              >
-                <span>{option.label}</span>
-                {option.value === value && (
-                  <Check size={14} className="text-(--accent)" />
-                )}
-              </button>
-            </li>
-          ))}
-        </ul>
+    <Menu
+      label={ariaLabel}
+      width={width ?? (appearance === 'field' ? 220 : 180)}
+      entries={options.map((option) => ({
+        id: option.value,
+        label: option.label,
+        checked: option.value === value,
+        onSelect: () => onChange(option.value),
+      }))}
+      trigger={({ ref, toggle, open, ...aria }) => (
+        <button
+          ref={ref}
+          type="button"
+          disabled={disabled}
+          onClick={toggle}
+          aria-label={`${ariaLabel}: ${selected?.label ?? ''}`}
+          {...aria}
+          className={clsx(
+            'inline-flex items-center justify-between gap-2 text-sm transition-colors disabled:opacity-50',
+            appearance === 'field'
+              ? 'h-8 min-w-[9rem] rounded-md border border-line bg-surface px-2.5 text-fg hover:border-line-strong'
+              : 'h-7 rounded-sm px-2 text-fg-2 hover:bg-hover hover:text-fg',
+            open && appearance === 'field' && 'border-line-strong',
+            className
+          )}
+        >
+          <span className="truncate">{selected?.label}</span>
+          <ChevronDown size={14} className={clsx('shrink-0 text-fg-3 transition-transform', open && 'rotate-180')} />
+        </button>
       )}
-    </div>
+    />
   );
 }

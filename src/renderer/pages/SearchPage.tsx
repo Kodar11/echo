@@ -1,294 +1,440 @@
-import { useEffect, useRef, useState } from 'react';
+import clsx from 'clsx';
+import { FolderPlus, Lock, X } from 'lucide-react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { EchoMark } from '../components/brand/EchoMark.js';
+import { EchoRipple } from '../components/brand/EchoRipple.js';
+import { SearchBar } from '../components/search/SearchBar.js';
+import { SearchFilterBar } from '../components/search/SearchFilters.js';
+import { SearchResultRow } from '../components/search/SearchResultRow.js';
 import {
-  AlertTriangle,
-  FileText,
-  FolderOpen,
-  Loader2,
-  Search,
-} from 'lucide-react';
+  NoLibrary,
+  NoResults,
+  QueryProblem,
+  ResultSkeleton,
+  SearchFailed,
+} from '../components/search/SearchStates.js';
+import { Button } from '../components/ui/Button.js';
+import { Kbd, MOD_KEY } from '../components/ui/Kbd.js';
+import { ProgressBar } from '../components/ui/ProgressBar.js';
+import { Select } from '../components/ui/Select.js';
+import { useLibraryStatus } from '../components/status/useLibraryStatus.js';
+import { formatCount, plural } from '../lib/format.js';
+import { composeQuery, SEARCH_EXAMPLES } from '../lib/query.js';
 import { useFoldersStore } from '../stores/foldersStore.js';
 import { useIndexStore } from '../stores/indexStore.js';
-import { useSearchStore } from '../stores/searchStore.js';
-import { EmptyState } from '../components/EmptyState.js';
-import { SearchResultItem } from '../components/SearchResultItem.js';
-import { SearchScopeSelector } from '../components/SearchScopeSelector.js';
-import { SearchSortSelector } from '../components/SearchSortSelector.js';
-import { SearchStats } from '../components/SearchStats.js';
-import { Input } from '../components/ui/Input.js';
-import { ProgressBar } from '../components/ui/ProgressBar.js';
-import { Badge } from '../components/ui/Badge.js';
+import { useNavStore } from '../stores/navStore.js';
+import { useSearchStore, type SortMode } from '../stores/searchStore.js';
+import { humanizeError, toast } from '../stores/toastStore.js';
+import { addFolderWithFeedback } from '../lib/actions.js';
+
+const SORT_OPTIONS: { value: SortMode; label: string }[] = [
+  { value: 'relevance', label: 'Best match' },
+  { value: 'newest', label: 'Newest first' },
+  { value: 'oldest', label: 'Oldest first' },
+  { value: 'largest', label: 'Largest first' },
+  { value: 'smallest', label: 'Smallest first' },
+  { value: 'alphabetical', label: 'Name (A–Z)' },
+];
+
+const TIPS_KEY = 'echo.searchTipsDismissed';
+
+function readTipsDismissed(): boolean {
+  try {
+    return localStorage.getItem(TIPS_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 export function SearchPage() {
-  const {
-    query,
-    results,
-    suggestions,
-    isSearching,
-    error,
-    totalCount,
-    durationMs,
-    sort,
-    folderIds,
-    setQuery,
-    setSort,
-    setFolderIds,
-    openFile,
-    openContainingFolder,
-    copyPath,
-  } = useSearchStore();
-  const { status } = useIndexStore();
-  const { folders, loadFolders } = useFoldersStore();
+  const query = useSearchStore((s) => s.query);
+  const filters = useSearchStore((s) => s.filters);
+  const folderIds = useSearchStore((s) => s.folderIds);
+  const results = useSearchStore((s) => s.results);
+  const error = useSearchStore((s) => s.error);
+  const failed = useSearchStore((s) => s.failed);
+  const isSearching = useSearchStore((s) => s.isSearching);
+  const totalCount = useSearchStore((s) => s.totalCount);
+  const durationMs = useSearchStore((s) => s.durationMs);
+  const resultsFor = useSearchStore((s) => s.resultsFor);
+  const sort = useSearchStore((s) => s.sort);
+  const setSort = useSearchStore((s) => s.setSort);
+  const setFilters = useSearchStore((s) => s.setFilters);
+  const setFolderIds = useSearchStore((s) => s.setFolderIds);
+  const setQuery = useSearchStore((s) => s.setQuery);
+  const clear = useSearchStore((s) => s.clear);
+  const refresh = useSearchStore((s) => s.refresh);
 
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [selectedIndex, setSelectedIndex] = useState(-1);
+  const folders = useFoldersStore((s) => s.folders);
+  const foldersLoaded = useFoldersStore((s) => s.loaded);
+  const indexing = useIndexStore((s) => s.progress.status === 'running');
+
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const listboxId = useId();
+  const [selected, setSelected] = useState(0);
 
-  useEffect(() => {
-    loadFolders();
-  }, [loadFolders]);
+  const composed = composeQuery(query, filters);
+  const hero = composed === '';
+  const settled = resultsFor === composed && !isSearching;
+  const roots = useMemo(() => folders.map((f) => f.path), [folders]);
 
   useEffect(() => {
     inputRef.current?.focus();
+    const focus = () => inputRef.current?.focus();
+    document.addEventListener('echo:focus-search', focus);
+    return () => document.removeEventListener('echo:focus-search', focus);
   }, []);
 
+  // New results → select the best match.
   useEffect(() => {
-    const handler = () => inputRef.current?.focus();
-    document.addEventListener('echo:focus-search', handler);
-    return () => document.removeEventListener('echo:focus-search', handler);
-  }, []);
+    setSelected(0);
+    scrollerRef.current?.scrollTo({ top: 0 });
+  }, [results]);
 
   useEffect(() => {
-    setSelectedIndex(-1);
-  }, [query, results.length]);
+    listRef.current
+      ?.querySelector<HTMLElement>(`[data-index="${selected}"]`)
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [selected]);
 
-  useEffect(() => {
-    if (selectedIndex >= 0 && listRef.current) {
-      const element = listRef.current.children[selectedIndex] as HTMLElement;
-      element?.scrollIntoView({ block: 'nearest' });
+  const open = useCallback(async (path: string) => {
+    try {
+      await useSearchStore.getState().openFile(path);
+    } catch (err) {
+      toast({ tone: 'error', title: 'Echo couldn’t open this file', description: humanizeError(err, 'It may have been moved or deleted.') });
     }
-  }, [selectedIndex]);
+  }, []);
+  const reveal = useCallback((path: string) => {
+    void useSearchStore.getState().openContainingFolder(path);
+  }, []);
+  const copy = useCallback(async (path: string) => {
+    await useSearchStore.getState().copyPath(path);
+    toast({ tone: 'success', title: 'Path copied' }, 1800);
+  }, []);
 
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      setSelectedIndex((prev) =>
-        prev < results.length - 1 ? prev + 1 : prev
-      );
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setSelectedIndex((prev) => (prev > 0 ? prev - 1 : -1));
-      if (selectedIndex === 0) {
-        inputRef.current?.focus();
-      }
-    } else if (e.key === 'Enter') {
-      if (selectedIndex >= 0 && results[selectedIndex]) {
-        openFile(results[selectedIndex].path);
-      } else {
-        setShowSuggestions(false);
-      }
-    } else if (e.key === 'Escape') {
-      setShowSuggestions(false);
-      setSelectedIndex(-1);
-    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
-      if (selectedIndex >= 0 && results[selectedIndex]) {
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    const mod = e.ctrlKey || e.metaKey;
+    const count = results.length;
+    switch (e.key) {
+      case 'ArrowDown':
+        if (!count) return;
         e.preventDefault();
-        copyPath(results[selectedIndex].path);
+        setSelected((i) => Math.min(count - 1, i + 1));
+        break;
+      case 'ArrowUp':
+        if (!count) return;
+        e.preventDefault();
+        setSelected((i) => Math.max(0, i - 1));
+        break;
+      case 'PageDown':
+        if (!count) return;
+        e.preventDefault();
+        setSelected((i) => Math.min(count - 1, i + 6));
+        break;
+      case 'PageUp':
+        if (!count) return;
+        e.preventDefault();
+        setSelected((i) => Math.max(0, i - 6));
+        break;
+      case 'Enter': {
+        const target = results[selected];
+        if (!target) return;
+        e.preventDefault();
+        if (mod || e.shiftKey) reveal(target.path);
+        else void open(target.path);
+        break;
       }
-    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
-      e.preventDefault();
-      inputRef.current?.focus();
-      inputRef.current?.select();
+      case 'Escape':
+        if (query) {
+          e.preventDefault();
+          clear();
+        } else if (filters.length > 0) {
+          e.preventDefault();
+          setFilters([]);
+        } else {
+          e.currentTarget.blur();
+        }
+        break;
+      default:
+        if (mod && e.key.toLowerCase() === 'c') {
+          const input = e.currentTarget;
+          const hasSelection = input.selectionStart !== input.selectionEnd;
+          const target = results[selected];
+          if (!hasSelection && target) {
+            e.preventDefault();
+            void copy(target.path);
+          }
+        } else if (mod && e.key.toLowerCase() === 'l') {
+          e.preventDefault();
+          e.currentTarget.select();
+        }
     }
   };
 
-  const isShortcutMac = navigator.platform.toLowerCase().includes('mac');
-  const shortcutLabel = isShortcutMac ? '⌘K' : 'Ctrl+K';
-
-  const progressPercent =
-    status.total > 0 ? Math.round((status.processed / status.total) * 100) : 0;
+  const activeId = results[selected] ? `${listboxId}-${selected}` : undefined;
+  const invalid = settled && !!error;
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
-      <div className="shrink-0 border-b border-(--border) bg-(--surface) px-6 py-4">
-        <div className="relative mx-auto w-full max-w-3xl">
-          <div className="relative">
-            <Search
-              size={18}
-              strokeWidth={1.8}
-              className="absolute left-3.5 top-1/2 -translate-y-1/2 text-(--text-tertiary)"
-            />
-            <Input
-              ref={inputRef}
-              type="text"
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setShowSuggestions(true);
-              }}
-              onFocus={() => setShowSuggestions(true)}
-              onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
-              onKeyDown={handleKeyDown}
-              placeholder="Search your files..."
-              disabled={status.status === 'indexing' && status.indexedFiles === 0 && status.total === 0}
-              className="h-12 rounded-2xl pl-11 pr-24 shadow-sm"
-            />
-            <div className="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1.5">
-              <Badge variant="default">{shortcutLabel}</Badge>
-              {isSearching && (
-                <Loader2
-                  size={14}
-                  className="animate-spin text-(--text-tertiary)"
+    <div className="relative flex h-full flex-col overflow-hidden">
+      <EchoRipple
+        className={clsx(
+          'absolute left-1/2 h-[560px] w-[560px] -translate-x-1/2 transition-opacity duration-500',
+          hero ? 'opacity-100' : 'opacity-0'
+        )}
+        style={{ top: 'calc(clamp(28px, 13vh, 132px) + 20px - 280px)' }}
+        active={hero}
+      />
+
+      {/* Search header: brand (hero only), search bar and chips. */}
+      <div
+        className="relative shrink-0 px-6 transition-[padding] duration-300 ease-out"
+        style={{ paddingTop: hero ? 'clamp(28px, 13vh, 132px)' : 8 }}
+      >
+        <div
+          className="mx-auto transition-[max-width] duration-300 ease-out"
+          style={{ maxWidth: hero ? 680 : 880 }}
+        >
+          <div
+            className="grid transition-[grid-template-rows,opacity] duration-300 ease-out"
+            style={{ gridTemplateRows: hero ? '1fr' : '0fr', opacity: hero ? 1 : 0 }}
+            aria-hidden={!hero}
+          >
+            <div className="overflow-hidden">
+              <div className="flex flex-col items-center pb-7 text-center">
+                <EchoMark size={40} />
+                <h1 className="mt-4 font-display text-2xl font-semibold tracking-[-0.02em] text-fg">Echo</h1>
+                <p className="mt-1 text-lg text-fg-2">Search everything you keep on your computer.</p>
+              </div>
+            </div>
+          </div>
+
+          <SearchBar
+            ref={inputRef}
+            size={hero ? 'hero' : 'compact'}
+            onKeyDown={onKeyDown}
+            listboxId={listboxId}
+            activeDescendant={activeId}
+            expanded={results.length > 0}
+            invalid={invalid}
+          />
+
+          <div className={clsx('mt-3', hero && 'flex justify-center')}>
+            <SearchFilterBar showSuggestions={hero} />
+          </div>
+        </div>
+      </div>
+
+      {hero ? (
+        <HeroBody
+          foldersLoaded={foldersLoaded}
+          folderCount={folders.length}
+          onExample={(example) => {
+            setQuery(example);
+            inputRef.current?.focus();
+          }}
+        />
+      ) : (
+        <>
+          <div ref={scrollerRef} className="relative mt-3 min-h-0 flex-1 overflow-y-auto px-6 pb-6">
+            <div className="mx-auto max-w-[880px]">
+              {results.length > 0 ? (
+                <>
+                  <div className="flex h-8 items-center justify-between gap-3 px-3">
+                    <p className="text-xs tabular-nums text-fg-3" aria-live="polite">
+                      {totalCount > results.length
+                        ? `Top ${formatCount(results.length)} of ${formatCount(totalCount)} results`
+                        : plural(totalCount, 'result')}
+                      <span className="opacity-70"> · {durationMs} ms</span>
+                    </p>
+                    <Select
+                      appearance="inline"
+                      ariaLabel="Sort results"
+                      value={sort}
+                      options={SORT_OPTIONS}
+                      onChange={setSort}
+                    />
+                  </div>
+                  <div
+                    ref={listRef}
+                    id={listboxId}
+                    role="listbox"
+                    aria-label="Search results"
+                    className={clsx('flex flex-col gap-px transition-opacity duration-150', isSearching && 'opacity-70')}
+                  >
+                    {results.map((result, index) => (
+                      <SearchResultRow
+                        key={result.fileId}
+                        id={`${listboxId}-${index}`}
+                        result={result}
+                        index={index}
+                        selected={index === selected}
+                        roots={roots}
+                        onSelect={setSelected}
+                        onOpen={open}
+                        onReveal={reveal}
+                        onCopy={copy}
+                      />
+                    ))}
+                  </div>
+                </>
+              ) : !settled ? (
+                <div className="pt-8">
+                  <ResultSkeleton />
+                </div>
+              ) : failed ? (
+                <SearchFailed onRetry={refresh} />
+              ) : error ? (
+                <QueryProblem error={error} hasFilters={filters.length > 0} onClearFilters={() => setFilters([])} />
+              ) : folders.length === 0 ? (
+                <NoLibrary onAddFolder={addFolderWithFeedback} />
+              ) : (
+                <NoResults
+                  query={query.trim()}
+                  hasFilters={filters.length > 0}
+                  scoped={folderIds.length > 0}
+                  indexing={indexing}
+                  onClearFilters={() => setFilters([])}
+                  onSearchEverywhere={() => setFolderIds([])}
                 />
               )}
             </div>
           </div>
-
-          {showSuggestions && suggestions.length > 0 && (
-            <ul className="absolute z-10 mt-2 w-full overflow-hidden rounded-xl border border-(--border) bg-(--surface) shadow-lg">
-              {suggestions.map((suggestion) => (
-                <li key={suggestion}>
-                  <button
-                    className="flex w-full items-center gap-2 px-4 py-2.5 text-left text-sm theme-text transition hover:bg-(--panel)"
-                    onMouseDown={() => {
-                      setQuery(suggestion);
-                      setShowSuggestions(false);
-                    }}
-                  >
-                    <Search size={14} className="theme-text-tertiary" />
-                    {suggestion}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div className="mx-auto mt-3 flex max-w-3xl items-center justify-between">
-          <SearchScopeSelector
-            folders={folders}
-            selectedIds={folderIds}
-            onChange={setFolderIds}
-          />
-          <SearchSortSelector value={sort} onChange={setSort} />
-        </div>
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-        <div className="mx-auto w-full max-w-3xl">
-          {!query && status.status === 'never_indexed' && (
-            <EmptyState
-              icon={FileText}
-              title="No index yet"
-              description="Add folders and build an index to start searching your files."
-            />
-          )}
-
-          {!query && status.status === 'indexed' && (
-            <EmptyState
-              icon={Search}
-              title="Start typing"
-              description="Enter a query to search across your indexed files. Try filters like type:pdf or before:2026-01-01."
-            />
-          )}
-
-          {!query && status.status === 'indexing' && (
-            <EmptyState
-              icon={Loader2}
-              title="Indexing in progress"
-              description={
-                status.currentFile
-                  ? `Processing ${status.currentFile}`
-                  : 'Scanning your folders...'
-              }
-              isLoading
-            />
-          )}
-
-          {query && !isSearching && error && (
-            <EmptyState
-              icon={AlertTriangle}
-              title={error.kind === 'filter' ? 'Invalid filter' : 'Invalid query'}
-              description={error.message}
-            />
-          )}
-
-          {query && !isSearching && !error && results.length === 0 && (
-            <EmptyState
-              icon={FolderOpen}
-              title="No results"
-              description={`No files matched "${query}".`}
-            />
-          )}
-
-          {isSearching && results.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-16">
-              <Loader2
-                size={28}
-                className="animate-spin text-(--text-tertiary)"
-              />
-              <p className="mt-3 text-xs theme-text-tertiary">Searching...</p>
-            </div>
-          )}
-
-          {results.length > 0 && (
-            <>
-              <div className="mb-3 flex items-center justify-between">
-                <SearchStats totalCount={totalCount} durationMs={durationMs} />
-              </div>
-              <div ref={listRef} className="space-y-2">
-                {results.map((result, index) => (
-                  <SearchResultItem
-                    key={result.fileId}
-                    result={result}
-                    isSelected={index === selectedIndex}
-                    matchedTerms={result.matchedTerms}
-                    onOpen={() => openFile(result.path)}
-                    onOpenFolder={(e) => {
-                      e.stopPropagation();
-                      openContainingFolder(result.path);
-                    }}
-                  />
-                ))}
-              </div>
-            </>
-          )}
-
-          {status.status === 'indexing' && status.total > 0 && (
-            <div className="mt-6 rounded-xl border border-(--border) bg-(--surface) p-3">
-              <div className="flex items-center justify-between text-xs">
-                <span className="theme-text-secondary">
-                  {status.currentFile
-                    ? `Indexing ${getBasename(status.currentFile)}`
-                    : 'Indexing files...'}
-                </span>
-                <span className="font-medium theme-text">
-                  {status.processed} / {status.total}
-                </span>
-              </div>
-              <ProgressBar
-                value={status.processed}
-                max={status.total}
-                size="md"
-                className="mt-2"
-              />
-            </div>
-          )}
-
-          {status.queueLength > 0 && status.status !== 'indexing' && (
-            <div className="mt-4 flex items-center justify-center gap-2 text-xs theme-text-tertiary">
-              <Loader2 size={12} className="animate-spin" />
-              {status.queueLength} file{status.queueLength === 1 ? '' : 's'} pending
-            </div>
-          )}
-        </div>
-      </div>
+          {results.length > 0 && <KeyboardHints />}
+        </>
+      )}
     </div>
   );
 }
 
-function getBasename(filePath: string): string {
-  const normalized = filePath.replace(/\\/g, '/');
-  const parts = normalized.split('/');
-  return parts[parts.length - 1] || filePath;
+function KeyboardHints() {
+  return (
+    <div className="flex h-9 shrink-0 items-center justify-center gap-5 border-t border-line text-2xs text-fg-3 max-[640px]:hidden">
+      <span className="flex items-center gap-1.5">
+        <Kbd keys={['↑', '↓']} /> Navigate
+      </span>
+      <span className="flex items-center gap-1.5">
+        <Kbd keys={['↵']} /> Open
+      </span>
+      <span className="flex items-center gap-1.5">
+        <Kbd keys={[MOD_KEY, '↵']} /> Show in folder
+      </span>
+      <span className="flex items-center gap-1.5">
+        <Kbd keys={[MOD_KEY, 'C']} /> Copy path
+      </span>
+      <span className="flex items-center gap-1.5">
+        <Kbd keys={['Esc']} /> Clear
+      </span>
+    </div>
+  );
+}
+
+/** What sits under the search bar before anything is typed. */
+function HeroBody({
+  foldersLoaded,
+  folderCount,
+  onExample,
+}: {
+  foldersLoaded: boolean;
+  folderCount: number;
+  onExample: (example: string) => void;
+}) {
+  const status = useLibraryStatus();
+  const indexedFiles = useIndexStore((s) => s.statistics.totalIndexedFiles);
+  const progress = useIndexStore((s) => s.progress);
+  const openSettings = useNavStore((s) => s.openSettings);
+  const navigate = useNavStore((s) => s.navigate);
+  const [tipsDismissed, setTipsDismissed] = useState(readTipsDismissed);
+
+  if (!foldersLoaded) return <div className="flex-1" />;
+
+  let body: React.ReactNode;
+  if (folderCount === 0) {
+    body = (
+      <div className="flex flex-col items-center gap-4">
+        <Button size="lg" variant="primary" icon={<FolderPlus size={16} />} onClick={addFolderWithFeedback}>
+          Add your first folder
+        </Button>
+        <p className="flex max-w-sm items-center gap-1.5 text-center text-xs text-fg-3">
+          <Lock size={12} className="shrink-0" />
+          Echo indexes and searches your files locally. Your index stays on this computer.
+        </p>
+      </div>
+    );
+  } else if (status.running && indexedFiles === 0) {
+    body = (
+      <div className="w-full max-w-sm rounded-lg border border-line bg-surface p-4">
+        <div className="flex items-baseline justify-between gap-3">
+          <p className="text-sm font-medium text-fg">{status.title}</p>
+          {progress.total > 0 && (
+            <p className="text-xs tabular-nums text-fg-3">
+              {formatCount(Math.min(progress.processed, progress.total))} / {formatCount(progress.total)}
+            </p>
+          )}
+        </div>
+        <ProgressBar className="mt-3" value={status.fraction} label="Indexing progress" />
+        <p className="mt-2.5 text-xs text-fg-3">Your files become searchable when this finishes.</p>
+      </div>
+    );
+  } else if (!status.running && indexedFiles === 0) {
+    body = (
+      <div className="flex flex-col items-center gap-3 text-center">
+        <p className="max-w-sm text-sm text-fg-2">
+          Echo didn’t find any files it can read in your library yet. It indexes PDFs, Word documents, web pages,
+          Markdown and text files.
+        </p>
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={() => navigate('library')}>
+            Open library
+          </Button>
+          <Button variant="ghost" onClick={() => openSettings('indexing')}>
+            File types
+          </Button>
+        </div>
+      </div>
+    );
+  } else {
+    body = (
+      <div className="flex flex-col items-center gap-3">
+        <p className="text-xs text-fg-3">
+          Searching {plural(indexedFiles, 'file')} in {plural(folderCount, 'folder')}
+        </p>
+        {!tipsDismissed && (
+          <div className="animate-fade-in flex max-w-full flex-wrap items-center justify-center gap-x-1.5 gap-y-1 text-xs text-fg-3">
+            <span>Try</span>
+            {SEARCH_EXAMPLES.map((example, i) => (
+              <span key={example} className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => onExample(example)}
+                  className="rounded-sm bg-hover px-1.5 py-0.5 font-mono text-[11.5px] text-fg-2 transition-colors hover:bg-press hover:text-fg"
+                >
+                  {example}
+                </button>
+                {i < SEARCH_EXAMPLES.length - 1 && <span className="opacity-50">·</span>}
+              </span>
+            ))}
+            <button
+              type="button"
+              aria-label="Hide search tips"
+              onClick={() => {
+                setTipsDismissed(true);
+                try {
+                  localStorage.setItem(TIPS_KEY, '1');
+                } catch {
+                  // Tips simply reappear next time.
+                }
+              }}
+              className="ml-1 flex h-5 w-5 items-center justify-center rounded-sm text-fg-3 hover:bg-hover hover:text-fg"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return <div className="animate-fade-in relative flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-6 pt-8">{body}</div>;
 }

@@ -2,6 +2,10 @@ type IndexedFolder = {
   id: number;
   path: string;
   enabled: number;
+  /** Indexed files under this folder (getFolders only). */
+  fileCount?: number;
+  /** When a full sync of this folder last completed (getFolders only). */
+  lastSyncedAt?: number | null;
 };
 
 type IndexStatus = 'never_indexed' | 'indexing' | 'indexed' | 'error';
@@ -268,6 +272,7 @@ type EventPayloadInputMapping = {
   repairIndex: void;
   runMaintenance: { vacuum?: boolean; analyze?: boolean };
   sendFrameAction: FrameWindowAction;
+  setTitleBarTheme: 'light' | 'dark';
   getWindowState: void;
   subscribeWindowState: void;
 };
@@ -312,6 +317,7 @@ type EventPayloadOutputMapping = {
   repairIndex: IntegrityReport;
   runMaintenance: MaintenanceResult;
   sendFrameAction: void;
+  setTitleBarTheme: void;
   getWindowState: WindowState;
   subscribeWindowState: WindowState;
 };
@@ -383,6 +389,7 @@ interface Window {
       analyze?: boolean;
     }) => Promise<MaintenanceResult>;
     sendFrameAction: (payload: FrameWindowAction) => void;
+    setTitleBarTheme: (theme: 'light' | 'dark') => void;
     getWindowState: () => Promise<WindowState>;
     subscribeWindowState: (
       callback: (state: WindowState) => void

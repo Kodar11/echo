@@ -1,10 +1,11 @@
 import fs from 'fs';
 import path from 'path';
-import { app, BrowserWindow, dialog, shell } from 'electron';
+import { app, BrowserWindow, dialog, nativeTheme, shell } from 'electron';
 import { ipcMainHandle, ipcMainOn, ipcWebContentsSend, isDev } from './util.js';
 import { getPreloadPath, getUIPath } from './pathResolver.js';
 import { createMenu } from './menu.js';
 import { closeDatabase } from '../database/connection.js';
+import { getFilePathsUnder } from '../database/files.js';
 import { getFolders } from '../database/folders.js';
 import {
   getIndexingFailures,
@@ -18,6 +19,12 @@ import { findDuplicateGroups } from '../search/duplicates.js';
 import type { IgnoreRuleRecord } from '../services/ignore/IgnoreRuleManager.js';
 
 let mainWindow: BrowserWindow | null = null;
+
+/** Caption-button colors for the native title bar overlay, per theme. */
+const TITLE_BAR_OVERLAY = {
+  dark: { color: '#0e1013', symbolColor: '#a4abb5', height: 44 },
+  light: { color: '#f6f7f9', symbolColor: '#505862', height: 44 },
+} as const;
 
 // The index lock and crash recovery assume a single process owns the
 // database, so a second instance just focuses the first one.
@@ -35,10 +42,16 @@ app.on('ready', () => {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
-    minWidth: 900,
-    minHeight: 600,
-    frame: false,
+    minWidth: 720,
+    minHeight: 520,
     titleBarStyle: 'hidden',
+    // Native caption buttons (minimize / maximize / close, including Windows
+    // Snap Layouts) drawn over the renderer's own title bar.
+    titleBarOverlay:
+      process.platform === 'darwin'
+        ? undefined
+        : TITLE_BAR_OVERLAY[nativeTheme.shouldUseDarkColors ? 'dark' : 'light'],
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#0e1013' : '#f6f7f9',
     webPreferences: {
       preload: getPreloadPath(),
     },
@@ -120,7 +133,13 @@ function setupIpcHandlers() {
   });
 
   ipcMainHandle(IPC_CHANNELS.GET_FOLDERS, () => {
-    return getFolders();
+    return getFolders().map((folder) => ({
+      id: folder.id,
+      path: folder.path,
+      enabled: folder.enabled,
+      lastSyncedAt: folder.last_synced_at,
+      fileCount: getFilePathsUnder(folder.path).length,
+    }));
   });
 
   ipcMainHandle(IPC_CHANNELS.SET_FOLDER_ENABLED, ({ id, enabled }) => {
@@ -322,6 +341,17 @@ function setupIpcHandlers() {
       case 'MINIMIZE':
         mainWindow.minimize();
         break;
+    }
+  });
+
+  ipcMainOn(IPC_CHANNELS.SET_TITLE_BAR_THEME, (theme) => {
+    if (!mainWindow || mainWindow.isDestroyed() || process.platform === 'darwin') return;
+    const overlay = TITLE_BAR_OVERLAY[theme === 'light' ? 'light' : 'dark'];
+    try {
+      mainWindow.setTitleBarOverlay(overlay);
+      mainWindow.setBackgroundColor(overlay.color);
+    } catch {
+      // Title bar overlays are unsupported on some platforms.
     }
   });
 

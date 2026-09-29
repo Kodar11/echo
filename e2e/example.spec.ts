@@ -44,44 +44,52 @@ test.afterEach(async () => {
 });
 
 test('should show the Echo search page', async () => {
-  await expect(
-    mainPage.locator('input[placeholder="Search your files..."]')
-  ).toBeVisible();
+  await expect(mainPage.getByRole('combobox', { name: 'Search your files' })).toBeVisible();
+  await expect(mainPage.getByRole('heading', { name: 'Echo' })).toBeVisible();
+  await expect(mainPage.getByRole('button', { name: 'Add your first folder' })).toBeVisible();
 });
 
 test('should create a native menu', async () => {
   const menu = await electronApp.evaluate((electron) => {
     return electron.Menu.getApplicationMenu();
   });
-  expect(menu).not.toBeNull();
+  // Windows/Linux use the custom title bar with no menu strip; macOS keeps an app menu.
+  if (process.platform === 'darwin') expect(menu).not.toBeNull();
+  else expect(menu).toBeNull();
 });
 
-test('should navigate through sidebar pages', async () => {
-  await mainPage.getByText('Folders', { exact: true }).click();
-  await expect(
-    mainPage.getByText('Browse for a folder...')
-  ).toBeVisible();
+test('should navigate between Search, Library and Settings', async () => {
+  const nav = mainPage.getByRole('navigation', { name: 'Main' });
 
-  await mainPage.getByText('Statistics', { exact: true }).click();
-  await expect(mainPage.getByText('Overview')).toBeVisible();
+  await nav.getByRole('button', { name: 'Library' }).click();
+  await expect(mainPage.getByRole('heading', { name: 'Library', exact: true })).toBeVisible();
+  await expect(mainPage.getByRole('heading', { name: 'Your library is empty' })).toBeVisible();
 
-  await mainPage.getByText('Duplicates', { exact: true }).click();
-  await expect(
-    mainPage.getByRole('heading', { name: 'No duplicates found' })
-  ).toBeVisible({ timeout: 10000 });
+  await nav.getByRole('button', { name: 'Settings' }).click();
+  await expect(mainPage.getByRole('heading', { name: 'Appearance', exact: true })).toBeVisible();
 
-  await mainPage.getByText('Health', { exact: true }).click();
-  await expect(
-    mainPage.getByRole('heading', { name: 'Index Health' })
-  ).toBeVisible({ timeout: 10000 });
+  const settingsNav = mainPage.getByRole('tablist', { name: 'Settings' });
+  await settingsNav.getByRole('tab', { name: 'Diagnostics' }).click();
+  await expect(mainPage.getByRole('heading', { name: 'Files that need attention' })).toBeVisible({ timeout: 10000 });
 
-  await mainPage.getByText('Broken Files', { exact: true }).click();
-  await expect(
-    mainPage.getByRole('heading', { name: 'Broken Files' })
-  ).toBeVisible({ timeout: 10000 });
+  await nav.getByRole('button', { name: 'Search' }).click();
+  await expect(mainPage.getByRole('combobox', { name: 'Search your files' })).toBeFocused();
+});
 
-  await mainPage.getByText('Settings', { exact: true }).click();
-  await expect(
-    mainPage.getByRole('heading', { name: 'Appearance' })
-  ).toBeVisible();
+test('should explain an empty library when searching', async () => {
+  await mainPage.getByRole('combobox', { name: 'Search your files' }).fill('anything');
+  await expect(mainPage.getByRole('heading', { name: 'Echo has no folders to search yet' })).toBeVisible();
+});
+
+test('should report invalid filters inline instead of empty results', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'echo-e2e-lib-'));
+  fs.writeFileSync(path.join(dir, 'notes.txt'), 'distributed systems notes');
+  await mainPage.evaluate(async (p) => {
+    await window.electron.addFolder({ path: p });
+  }, dir);
+  const input = mainPage.getByRole('combobox', { name: 'Search your files' });
+  await input.fill('notes foo:bar');
+  await expect(mainPage.getByRole('heading', { name: 'Echo couldn’t understand this search' })).toBeVisible({ timeout: 10000 });
+  await expect(mainPage.getByText('Unknown filter "foo"', { exact: false })).toBeVisible();
+  fs.rmSync(dir, { recursive: true, force: true });
 });

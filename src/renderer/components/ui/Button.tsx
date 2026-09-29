@@ -1,51 +1,52 @@
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import clsx from 'clsx';
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from 'react';
+import { Spinner } from './Spinner.js';
 
-type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
-type ButtonSize = 'sm' | 'md';
+export type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'danger-ghost';
+export type ButtonSize = 'sm' | 'md' | 'lg';
 
 interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   size?: ButtonSize;
-  children: ReactNode;
+  icon?: ReactNode;
   isLoading?: boolean;
 }
 
 const variantClasses: Record<ButtonVariant, string> = {
-  primary:
-    'bg-(--accent) text-(--accent-foreground) hover:bg-(--accent-hover)',
-  secondary:
-    'border border-(--border) bg-(--panel) theme-text hover:bg-(--surface) hover:border-(--border-strong)',
-  ghost: 'theme-text-secondary hover:bg-(--panel) hover:theme-text',
-  danger: 'bg-(--danger) text-white hover:opacity-90',
+  primary: 'bg-accent text-accent-fg hover:bg-accent-hover shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]',
+  secondary: 'bg-surface text-fg border border-line hover:bg-hover hover:border-line-strong',
+  ghost: 'text-fg-2 hover:bg-hover hover:text-fg',
+  danger: 'bg-danger text-white hover:bg-danger-hover',
+  'danger-ghost': 'text-danger hover:bg-danger-soft',
 };
 
 const sizeClasses: Record<ButtonSize, string> = {
-  sm: 'h-8 px-3 text-xs gap-1.5',
-  md: 'h-10 px-4 text-sm gap-2',
+  sm: 'h-7 px-2.5 text-xs gap-1.5 rounded-sm',
+  md: 'h-8 px-3 text-sm gap-2 rounded-md',
+  lg: 'h-10 px-4 text-base gap-2 rounded-md',
 };
 
-export function Button({
-  variant = 'secondary',
-  size = 'md',
-  children,
-  isLoading,
-  disabled,
-  className = '',
-  ...props
-}: ButtonProps) {
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
+  { variant = 'secondary', size = 'md', icon, isLoading, disabled, className, children, type = 'button', ...props },
+  ref
+) {
   return (
     <button
+      ref={ref}
+      type={type}
       disabled={disabled || isLoading}
-      className={`
-        inline-flex items-center justify-center rounded-lg font-medium
-        transition-colors focus-ring disabled:opacity-50 disabled:cursor-not-allowed
-        ${variantClasses[variant]}
-        ${sizeClasses[size]}
-        ${className}
-      `}
+      className={clsx(
+        'inline-flex shrink-0 select-none items-center justify-center whitespace-nowrap font-medium',
+        'transition-[background-color,border-color,color,transform] duration-150 active:translate-y-px',
+        'disabled:pointer-events-none disabled:opacity-50',
+        variantClasses[variant],
+        sizeClasses[size],
+        className
+      )}
       {...props}
     >
+      {isLoading ? <Spinner size={size === 'sm' ? 12 : 14} /> : icon}
       {children}
     </button>
   );
-}
+});

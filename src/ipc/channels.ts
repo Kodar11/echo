@@ -38,6 +38,7 @@ export const IPC_CHANNELS = {
   REPAIR_INDEX: 'repairIndex',
   RUN_MAINTENANCE: 'runMaintenance',
   SEND_FRAME_ACTION: 'sendFrameAction',
+  SET_TITLE_BAR_THEME: 'setTitleBarTheme',
   GET_WINDOW_STATE: 'getWindowState',
   SUBSCRIBE_WINDOW_STATE: 'subscribeWindowState',
 } as const;
