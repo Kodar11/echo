@@ -1,6 +1,8 @@
-<img src="src/assets/echo-icon.png" alt="Echo" width="80">
+<p align="center">
+  <img src="src/assets/echo-icon.png" alt="Echo" width="80">
+</p>
 
-# Echo
+<h1 align="center">Echo</h1>
 
 **A fast, local search engine for everything on your computer.**
 
@@ -9,6 +11,22 @@ Echo indexes the documents in folders you choose (PDFs, Word files, notes, web p
 ![Echo search interface showing content-aware file search](src/assets/search.png)
 
 ![Echo demo showing search and opening a file](src/assets/demo.gif)
+
+## Download
+
+Echo is currently available for **Windows**.
+
+### Windows
+
+Download the latest release from [GitHub Releases](https://github.com/Kodar11/echo/releases):
+
+- **Windows Portable (.exe)**: download and run directly, no installation required.
+- **Windows Installer (.msi)**: standard Windows installation.
+
+### Coming soon
+
+- macOS
+- Linux
 
 ---
 

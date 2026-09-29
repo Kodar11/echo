@@ -183,7 +183,7 @@ export function SearchPage() {
           'absolute left-1/2 h-[560px] w-[560px] -translate-x-1/2 transition-opacity duration-500',
           hero ? 'opacity-100' : 'opacity-0'
         )}
-        style={{ top: 'calc(clamp(28px, 13vh, 132px) + 20px - 280px)' }}
+        style={{ top: 'calc(clamp(28px, 13vh, 132px) + 24px - 280px)' }}
         active={hero}
       />
 
