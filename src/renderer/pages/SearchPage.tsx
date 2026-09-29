@@ -203,7 +203,7 @@ export function SearchPage() {
           >
             <div className="overflow-hidden">
               <div className="flex flex-col items-center pb-7 text-center">
-                <EchoMark size={40} />
+                <EchoMark size={48} />
                 <h1 className="mt-4 font-display text-2xl font-semibold tracking-[-0.02em] text-fg">Echo</h1>
                 <p className="mt-1 text-lg text-fg-2">Search everything you keep on your computer.</p>
               </div>

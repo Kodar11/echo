@@ -105,7 +105,7 @@ export function SearchFailed({ onRetry }: { onRetry: () => void }) {
 export function NoLibrary({ onAddFolder }: { onAddFolder: () => void }) {
   return (
     <StatePanel
-      icon={<EchoMark size={20} />}
+      icon={<EchoMark size={24} />}
       title="Echo has no folders to search yet"
       description="Add a folder to your library and its files become searchable in moments."
     >

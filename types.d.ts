@@ -396,3 +396,8 @@ interface Window {
     ) => UnsubscribeFunction;
   };
 }
+
+declare module '*.png' {
+  const src: string;
+  export default src;
+}

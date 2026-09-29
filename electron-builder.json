@@ -1,8 +1,13 @@
 {
   "appId": "com.echo.desktop",
   "productName": "Echo",
-  "files": ["dist-electron", "dist-react"],
-  "extraResources": ["dist-electron/electron/preload.cjs"],
+  "files": [
+    "dist-electron",
+    "dist-react"
+  ],
+  "extraResources": [
+    "dist-electron/electron/preload.cjs"
+  ],
   "icon": "./desktopIcon.png",
   "mac": {
     "target": "dmg"
@@ -12,6 +17,10 @@
     "category": "Utility"
   },
   "win": {
-    "target": ["portable", "msi"]
+    "target": [
+      "portable",
+      "msi"
+    ],
+    "icon": "./echo.ico"
   }
 }
