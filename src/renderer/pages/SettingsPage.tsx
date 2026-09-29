@@ -3,10 +3,12 @@ import {
   AlertTriangle,
   Archive,
   Bug,
+  CheckCircle2,
   Database,
   Eye,
   FileSearch,
   Filter,
+  FolderOpen,
   FolderX,
   HardDrive,
   Info,
@@ -18,8 +20,10 @@ import {
   Search,
   Shield,
   Sun,
+  Trash2,
   Upload,
   Wrench,
+  XCircle,
 } from 'lucide-react';
 import {
   type ThemePreference,
@@ -28,7 +32,19 @@ import {
 import { useSettingsStore } from '../stores/settingsStore.js';
 import { useIgnoreRulesStore } from '../stores/ignoreRulesStore.js';
 import { useBackupStore } from '../stores/backupStore.js';
+import { useHealthStore } from '../stores/healthStore.js';
+import { useIndexStore } from '../stores/indexStore.js';
 import { formatBytes } from '../lib/format.js';
+import { PageShell } from '../components/ui/PageShell.js';
+import { Card } from '../components/ui/Card.js';
+import { Button } from '../components/ui/Button.js';
+import { Input } from '../components/ui/Input.js';
+import { Select } from '../components/ui/Select.js';
+import { Toggle } from '../components/ui/Toggle.js';
+import { Badge } from '../components/ui/Badge.js';
+import { IconButton } from '../components/ui/IconButton.js';
+import { Collapsible } from '../components/ui/Collapsible.js';
+import { SettingRow } from '../components/ui/SettingRow.js';
 
 const FILE_SIZE_OPTIONS: { label: string; value: number }[] = [
   { label: 'Unlimited', value: 0 },
@@ -46,9 +62,39 @@ const EXTRACTOR_OPTIONS: { id: ExtractorId; label: string }[] = [
   { id: 'text', label: 'Text' },
 ];
 
+const THEME_OPTIONS: { value: ThemePreference; label: string }[] = [
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+  { value: 'system', label: 'System' },
+];
+
+const INDEXING_MODE_OPTIONS: { value: IndexingMode; label: string }[] = [
+  { value: 'immediate', label: 'Index immediately (watch folders)' },
+  { value: 'startup', label: 'Index only on startup' },
+  { value: 'scheduled', label: 'Scheduled indexing' },
+  { value: 'manual', label: 'Manual only' },
+];
+
+const SCHEDULE_OPTIONS: { value: ScheduleInterval; label: string }[] = [
+  { value: 'hourly', label: 'Hourly' },
+  { value: 'daily', label: 'Daily' },
+];
+
+const MIGRATION_OPTIONS: { value: 'auto' | 'prompt' | 'block'; label: string }[] = [
+  { value: 'auto', label: 'Apply automatically' },
+  { value: 'prompt', label: 'Prompt before migrating' },
+  { value: 'block', label: 'Block until manual action' },
+];
+
+const RECOVERY_OPTIONS: { value: 'auto' | 'notify' | 'manual'; label: string }[] = [
+  { value: 'auto', label: 'Recover automatically' },
+  { value: 'notify', label: 'Notify and wait' },
+  { value: 'manual', label: 'Manual only' },
+];
+
 export function SettingsPage() {
   const preference = useThemeStore((state) => state.preference);
-  const setPreference = useThemeStore((state) => state.setPreference);
+  const persistPreference = useThemeStore((state) => state.persistPreference);
   const { settings, loadSettings, setSetting } = useSettingsStore();
   const { rules, loadRules, addRule, setEnabled, deleteRule } =
     useIgnoreRulesStore();
@@ -58,7 +104,6 @@ export function SettingsPage() {
     lastResult,
     exportBackup,
     importBackup,
-    validateBackup,
     clearResult,
   } = useBackupStore();
   const [newRule, setNewRule] = useState('');
@@ -73,15 +118,9 @@ export function SettingsPage() {
     loadRules();
   }, [loadSettings, loadRules]);
 
-  const themeOptions: {
-    value: ThemePreference;
-    label: string;
-    icon: typeof Sun;
-  }[] = [
-    { value: 'light', label: 'Light', icon: Sun },
-    { value: 'dark', label: 'Dark', icon: Moon },
-    { value: 'system', label: 'System', icon: Monitor },
-  ];
+  const handleThemeChange = (value: ThemePreference) => {
+    persistPreference(value);
+  };
 
   const handleFileSizeChange = (value: number) => {
     setSetting('maxFileSizeBytes', value);
@@ -124,6 +163,17 @@ export function SettingsPage() {
     setRepairReport(report);
   };
 
+  const handleResetDatabase = async () => {
+    const confirmed = window.confirm(
+      'Reset the database?\n\nThis deletes the whole index, your indexed folders, ignore rules and settings, and starts from an empty database. This cannot be undone.'
+    );
+    if (!confirmed) return;
+    setVerifyReport(null);
+    setRepairReport(null);
+    await useIndexStore.getState().resetDatabase();
+    window.location.reload();
+  };
+
   const handleMaintenance = async (options: { vacuum?: boolean }) => {
     setIsRunningMaintenance(true);
     try {
@@ -135,121 +185,81 @@ export function SettingsPage() {
   };
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto px-8 py-6">
-      <div className="mx-auto w-full max-w-2xl space-y-6">
-        <section className="rounded-xl bg-(--surface) p-5">
-          <SectionHeader
-            icon={Monitor}
-            title="Appearance"
-            description="Choose your preferred color scheme"
-          />
-          <div className="mt-4 grid grid-cols-3 gap-2">
-            {themeOptions.map((option) => {
-              const Icon = option.icon;
-              const isActive = preference === option.value;
-              return (
+    <PageShell title="Settings" subtitle="Customize Echo to fit your workflow" maxWidth="2xl">
+      <IndexHealthHeader />
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Collapsible title="Appearance" subtitle="Choose your preferred color scheme">
+          <SettingRow label="Theme" description="Light, dark, or follow your system">
+            <Select
+              value={preference}
+              options={THEME_OPTIONS}
+              onChange={(value) => handleThemeChange(value as ThemePreference)}
+              className="w-40"
+            />
+          </SettingRow>
+        </Collapsible>
+
+        <Collapsible title="Indexing" subtitle="Control how and when Echo keeps your index up to date">
+          <SettingRow label="Indexing mode">
+            <Select
+              value={settings.indexingMode}
+              options={INDEXING_MODE_OPTIONS}
+              onChange={(value) =>
+                setSetting('indexingMode', value as IndexingMode)
+              }
+              className="w-56"
+            />
+          </SettingRow>
+
+          {settings.indexingMode === 'scheduled' && (
+            <SettingRow label="Schedule">
+              <Select
+                value={settings.scheduleInterval}
+                options={SCHEDULE_OPTIONS}
+                onChange={(value) =>
+                  setSetting('scheduleInterval', value as ScheduleInterval)
+                }
+                className="w-40"
+              />
+            </SettingRow>
+          )}
+
+          <div className="py-3">
+            <p className="text-sm font-medium theme-text">Maximum file size</p>
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {FILE_SIZE_OPTIONS.map((opt) => (
                 <button
-                  key={option.value}
-                  onClick={() => setPreference(option.value)}
-                  className={`flex flex-col items-center gap-2 rounded-xl border px-3 py-3 text-sm font-medium transition ${
-                    isActive
+                  key={opt.value}
+                  onClick={() => handleFileSizeChange(opt.value)}
+                  className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition focus-ring ${
+                    settings.maxFileSizeBytes === opt.value
                       ? 'border-(--accent) bg-(--accent-soft) text-(--accent)'
                       : 'border-(--border) bg-(--panel) theme-text-secondary hover:theme-text'
                   }`}
                 >
-                  <Icon size={18} strokeWidth={1.6} />
-                  {option.label}
+                  {opt.label}
                 </button>
-              );
-            })}
-          </div>
-        </section>
-
-        <section className="rounded-xl bg-(--surface) p-5">
-          <SectionHeader
-            icon={RefreshCw}
-            title="Indexing"
-            description="Control how and when Echo keeps your index up to date"
-          />
-          <div className="mt-4 space-y-4">
-            <div>
-              <label className="text-xs font-medium theme-text">Indexing mode</label>
-              <select
-                value={settings.indexingMode}
-                onChange={(e) =>
-                  setSetting('indexingMode', e.target.value as IndexingMode)
-                }
-                className="mt-1.5 w-full rounded-lg border border-(--border-strong) bg-(--panel) px-3 py-2 text-sm theme-text outline-none focus:border-(--accent)"
-              >
-                <option value="immediate">Index immediately (watch folders)</option>
-                <option value="startup">Index only on startup</option>
-                <option value="scheduled">Scheduled indexing</option>
-                <option value="manual">Manual only</option>
-              </select>
+              ))}
             </div>
-
-            {settings.indexingMode === 'scheduled' && (
-              <div>
-                <label className="text-xs font-medium theme-text">Schedule</label>
-                <select
-                  value={settings.scheduleInterval}
-                  onChange={(e) =>
-                    setSetting(
-                      'scheduleInterval',
-                      e.target.value as ScheduleInterval
-                    )
-                  }
-                  className="mt-1.5 w-full rounded-lg border border-(--border-strong) bg-(--panel) px-3 py-2 text-sm theme-text outline-none focus:border-(--accent)"
-                >
-                  <option value="hourly">Hourly</option>
-                  <option value="daily">Daily</option>
-                </select>
-              </div>
+            <Input
+              type="text"
+              value={customSize}
+              onChange={(e) => handleCustomSizeChange(e.target.value)}
+              placeholder="Custom: e.g. 250 MB"
+              className="mt-2"
+            />
+            {settings.maxFileSizeBytes > 0 && (
+              <p className="mt-1 text-xs theme-text-secondary">
+                Files larger than {formatBytes(settings.maxFileSizeBytes)} will
+                be skipped
+              </p>
             )}
-
-            <div>
-              <label className="text-xs font-medium theme-text">
-                Maximum file size
-              </label>
-              <div className="mt-1.5 flex flex-wrap gap-2">
-                {FILE_SIZE_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.value}
-                    onClick={() => handleFileSizeChange(opt.value)}
-                    className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
-                      settings.maxFileSizeBytes === opt.value
-                        ? 'border-(--accent) bg-(--accent-soft) text-(--accent)'
-                        : 'border-(--border) bg-(--panel) theme-text-secondary hover:theme-text'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
-              <input
-                type="text"
-                value={customSize}
-                onChange={(e) => handleCustomSizeChange(e.target.value)}
-                placeholder="Custom: e.g. 250 MB"
-                className="mt-2 w-full rounded-lg border border-(--border-strong) bg-(--panel) px-3 py-2 text-sm theme-text outline-none focus:border-(--accent)"
-              />
-              {settings.maxFileSizeBytes > 0 && (
-                <p className="mt-1 text-[11px] theme-text-secondary">
-                  Files larger than {formatBytes(settings.maxFileSizeBytes)} will
-                  be skipped
-                </p>
-              )}
-            </div>
           </div>
-        </section>
+        </Collapsible>
 
-        <section className="rounded-xl bg-(--surface) p-5">
-          <SectionHeader
-            icon={FileSearch}
-            title="Extractors"
-            description="Choose which file types Echo should index"
-          />
-          <div className="mt-4 flex flex-wrap gap-2">
+        <Collapsible title="Extractors" subtitle="Choose which file types Echo should index">
+          <div className="flex flex-wrap gap-2 py-1">
             {EXTRACTOR_OPTIONS.map((extractor) => {
               const enabled = settings.enabledExtractors.includes(extractor.id);
               return (
@@ -263,330 +273,359 @@ export function SettingsPage() {
                       : [...settings.enabledExtractors, extractor.id];
                     setSetting('enabledExtractors', next);
                   }}
-                  className={`rounded-lg border px-3 py-2 text-xs font-medium transition ${
+                  className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium transition focus-ring ${
                     enabled
                       ? 'border-(--accent) bg-(--accent-soft) text-(--accent)'
                       : 'border-(--border) bg-(--panel) theme-text-secondary hover:theme-text'
                   }`}
                 >
-                  {enabled ? '✓ ' : ''}
+                  {enabled && (
+                    <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-(--accent) text-(--accent-foreground)">
+                      <svg
+                        width="8"
+                        height="8"
+                        viewBox="0 0 8 8"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                      >
+                        <path
+                          d="M1 4L3 6L7 2"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    </span>
+                  )}
                   {extractor.label}
                 </button>
               );
             })}
           </div>
-        </section>
+        </Collapsible>
 
-        <section className="rounded-xl bg-(--surface) p-5">
-          <SectionHeader
-            icon={FolderX}
-            title="Ignore Rules"
-            description="Patterns matching files and folders to skip during indexing"
-          />
-          <div className="mt-4 space-y-2">
-            {rules.map((rule) => (
-              <div
-                key={rule.id}
-                className="flex items-center justify-between rounded-lg border border-(--border) bg-(--panel) px-3 py-2"
-              >
-                <div className="flex items-center gap-2">
-                  <span className="text-xs theme-text">{rule.pattern}</span>
-                  <span className="rounded bg-(--surface) px-1.5 py-0.5 text-[10px] theme-text-secondary">
-                    {rule.type}
-                  </span>
-                </div>
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={() => setEnabled(rule.id, !rule.enabled)}
-                    className={`rounded px-2 py-1 text-[11px] font-medium transition ${
-                      rule.enabled
-                        ? 'bg-(--accent-soft) text-(--accent)'
-                        : 'bg-(--surface) theme-text-secondary'
-                    }`}
-                  >
-                    {rule.enabled ? 'Enabled' : 'Disabled'}
-                  </button>
-                  <button
-                    onClick={() => deleteRule(rule.id)}
-                    className="rounded px-2 py-1 text-[11px] font-medium text-red-500 transition hover:bg-(--surface)"
-                  >
-                    Remove
-                  </button>
-                </div>
-              </div>
-            ))}
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={newRule}
-                onChange={(e) => setNewRule(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && newRule.trim()) {
-                    addRule(newRule.trim());
-                    setNewRule('');
-                  }
-                }}
-                placeholder="e.g. node_modules/ or *.tmp"
-                className="flex-1 rounded-lg border border-(--border-strong) bg-(--panel) px-3 py-2 text-sm theme-text outline-none focus:border-(--accent)"
-              />
-              <button
-                onClick={() => {
-                  if (newRule.trim()) {
-                    addRule(newRule.trim());
-                    setNewRule('');
-                  }
-                }}
-                className="rounded-lg bg-(--accent) px-3 py-2 text-xs font-medium text-white transition hover:bg-(--accent-hover)"
-              >
-                Add
-              </button>
-            </div>
-          </div>
-        </section>
+        <Collapsible title="Search Intelligence" subtitle="Language-aware indexing and query expansion">
+          <SettingRow
+            label="Detect language"
+            description="Identify English, Hindi, and Marathi documents"
+          >
+            <Toggle
+              checked={settings.enableLanguageDetection}
+              onChange={(checked) =>
+                setSetting('enableLanguageDetection', checked)
+              }
+              ariaLabel="Detect language"
+              size="md"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Remove stop words"
+            description="Skip common words during indexing"
+          >
+            <Toggle
+              checked={settings.removeStopWords}
+              onChange={(checked) => setSetting('removeStopWords', checked)}
+              ariaLabel="Remove stop words"
+              size="md"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Enable stemming"
+            description="Match words with the same English root"
+          >
+            <Toggle
+              checked={settings.enableStemming}
+              onChange={(checked) => setSetting('enableStemming', checked)}
+              ariaLabel="Enable stemming"
+              size="md"
+            />
+          </SettingRow>
+          <SettingRow
+            label="Index metadata"
+            description="Extract author, dates, language, and content hash"
+          >
+            <Toggle
+              checked={settings.indexMetadata}
+              onChange={(checked) => setSetting('indexMetadata', checked)}
+              ariaLabel="Index metadata"
+              size="md"
+            />
+          </SettingRow>
+        </Collapsible>
+      </div>
 
-        <section className="rounded-xl bg-(--surface) p-5">
-          <SectionHeader
-            icon={Archive}
-            title="Backups"
-            description="Export or restore your index and settings"
-          />
-          <div className="mt-4 flex flex-wrap gap-3">
-            <button
-              onClick={handleExport}
-              disabled={isExporting}
-              className="flex items-center gap-2 rounded-lg bg-(--accent) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--accent-hover) disabled:opacity-50"
+      <Collapsible title="Ignore Rules" subtitle="Patterns matching files and folders to skip during indexing">
+        <div className="space-y-2">
+          {rules.map((rule) => (
+            <div
+              key={rule.id}
+              className="flex items-center justify-between gap-4 rounded-lg border border-(--border) bg-(--panel) px-4 py-3"
             >
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-sm theme-text">{rule.pattern}</span>
+                <Badge variant="default">{rule.type}</Badge>
+              </div>
+              <div className="flex shrink-0 items-center gap-3">
+                <Toggle
+                  checked={rule.enabled}
+                  onChange={() => setEnabled(rule.id, !rule.enabled)}
+                  ariaLabel={`Toggle ignore rule ${rule.pattern}`}
+                  size="md"
+                />
+                <IconButton
+                  onClick={() => deleteRule(rule.id)}
+                  tooltip="Remove rule"
+                  variant="danger"
+                >
+                  <Trash2 size={16} strokeWidth={1.6} />
+                </IconButton>
+              </div>
+            </div>
+          ))}
+          <div className="flex gap-2 pt-2">
+            <Input
+              type="text"
+              value={newRule}
+              onChange={(e) => setNewRule(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && newRule.trim()) {
+                  addRule(newRule.trim());
+                  setNewRule('');
+                }
+              }}
+              placeholder="e.g. node_modules/ or *.tmp"
+              className="flex-1"
+            />
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => {
+                if (newRule.trim()) {
+                  addRule(newRule.trim());
+                  setNewRule('');
+                }
+              }}
+            >
+              Add
+            </Button>
+          </div>
+        </div>
+      </Collapsible>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <Collapsible
+          title="Backups"
+          subtitle="Export or restore your index and settings"
+          defaultOpen={false}
+        >
+          <div className="flex flex-wrap gap-3">
+            <Button variant="primary" onClick={handleExport} disabled={isExporting}>
               <Save size={14} />
               {isExporting ? 'Exporting…' : 'Export backup'}
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="secondary"
               onClick={handleImport}
               disabled={isImporting}
-              className="flex items-center gap-2 rounded-lg border border-(--border) bg-(--panel) px-4 py-2 text-sm font-medium theme-text transition hover:bg-(--surface) disabled:opacity-50"
             >
               <Upload size={14} />
               {isImporting ? 'Importing…' : 'Import backup'}
-            </button>
+            </Button>
           </div>
           {lastResult && (
             <p
-              className={`mt-3 text-xs ${
-                lastResult.success ? 'text-green-600' : 'text-red-500'
+              className={`mt-3 text-sm ${
+                lastResult.success ? 'text-(--success)' : 'text-(--danger)'
               }`}
             >
               {lastResult.message}
             </p>
           )}
-        </section>
+        </Collapsible>
 
-        <section className="rounded-xl bg-(--surface) p-5">
-          <SectionHeader
-            icon={Bug}
-            title="Logging"
-            description="Choose which logs Echo writes to help diagnose issues"
-          />
-          <div className="mt-4 space-y-3">
-            <SettingToggle
-              icon={RefreshCw}
-              label="Index logs"
-              description="Log indexing operations"
+        <Collapsible
+          title="Logging"
+          subtitle="Choose which logs Echo writes to help diagnose issues"
+          defaultOpen={false}
+        >
+          <SettingRow label="Index logs" description="Log indexing operations">
+            <Toggle
               checked={settings.enableIndexLogging}
               onChange={(checked) => setSetting('enableIndexLogging', checked)}
+              ariaLabel="Index logs"
+              size="md"
             />
-            <SettingToggle
-              icon={Eye}
-              label="Watcher logs"
-              description="Log file system watcher events"
+          </SettingRow>
+          <SettingRow
+            label="Watcher logs"
+            description="Log file system watcher events"
+          >
+            <Toggle
               checked={settings.enableWatcherLogging}
               onChange={(checked) =>
                 setSetting('enableWatcherLogging', checked)
               }
+              ariaLabel="Watcher logs"
+              size="md"
             />
-            <SettingToggle
-              icon={Database}
-              label="Error logs"
-              description="Log indexing errors"
+          </SettingRow>
+          <SettingRow label="Error logs" description="Log indexing errors">
+            <Toggle
               checked={settings.enableErrorLogging}
               onChange={(checked) => setSetting('enableErrorLogging', checked)}
+              ariaLabel="Error logs"
+              size="md"
             />
-            <SettingToggle
-              icon={Bug}
-              label="Debug logs"
-              description="Log detailed debug information"
+          </SettingRow>
+          <SettingRow label="Debug logs" description="Log detailed debug information">
+            <Toggle
               checked={settings.enableDebugLogging}
               onChange={(checked) => setSetting('enableDebugLogging', checked)}
+              ariaLabel="Debug logs"
+              size="md"
             />
-          </div>
-          <button
+          </SettingRow>
+          <Button
+            variant="secondary"
+            size="sm"
             onClick={() => window.electron.openLogFolder()}
-            className="mt-4 rounded-lg border border-(--border) bg-(--panel) px-3 py-2 text-xs font-medium theme-text-secondary transition hover:theme-text"
+            className="mt-2"
           >
             Open log folder
-          </button>
-        </section>
+          </Button>
+        </Collapsible>
+      </div>
 
-        <section className="rounded-xl bg-(--surface) p-5">
-          <SectionHeader
-            icon={Languages}
-            title="Search intelligence"
-            description="Language-aware indexing and query expansion"
+      <Collapsible
+        title="Advanced"
+        subtitle="Reliability, maintenance, and recovery options"
+        defaultOpen={false}
+      >
+        <SettingRow
+          label="Automatic recovery"
+          description="Recover automatically after an interrupted indexing session"
+        >
+          <Toggle
+            checked={settings.autoRecovery}
+            onChange={(checked) => setSetting('autoRecovery', checked)}
+            ariaLabel="Automatic recovery"
+            size="md"
           />
-          <div className="mt-4 space-y-3">
-            <SettingToggle
-              icon={Languages}
-              label="Detect language"
-              description="Identify English, Hindi, and Marathi documents"
-              checked={settings.enableLanguageDetection}
-              onChange={(checked) =>
-                setSetting('enableLanguageDetection', checked)
-              }
-            />
-            <SettingToggle
-              icon={Filter}
-              label="Remove stop words"
-              description="Skip common words during indexing"
-              checked={settings.removeStopWords}
-              onChange={(checked) => setSetting('removeStopWords', checked)}
-            />
-            <SettingToggle
-              icon={Search}
-              label="Enable stemming"
-              description="Match words with the same English root (run/running)"
-              checked={settings.enableStemming}
-              onChange={(checked) => setSetting('enableStemming', checked)}
-            />
-            <SettingToggle
-              icon={FileSearch}
-              label="Index metadata"
-              description="Extract author, dates, language, and content hash"
-              checked={settings.indexMetadata}
-              onChange={(checked) => setSetting('indexMetadata', checked)}
-            />
-          </div>
-        </section>
-
-        <section className="rounded-xl bg-(--surface) p-5">
-          <SectionHeader
-            icon={Shield}
-            title="Advanced"
-            description="Reliability, maintenance, and recovery options"
+        </SettingRow>
+        <SettingRow
+          label="Transaction logging"
+          description="Log transaction begin, commit, and rollback events"
+        >
+          <Toggle
+            checked={settings.transactionLogging}
+            onChange={(checked) => setSetting('transactionLogging', checked)}
+            ariaLabel="Transaction logging"
+            size="md"
           />
-          <div className="mt-4 space-y-3">
-            <SettingToggle
-              icon={RefreshCw}
-              label="Automatic recovery"
-              description="Recover automatically after an interrupted indexing session"
-              checked={settings.autoRecovery}
-              onChange={(checked) => setSetting('autoRecovery', checked)}
-            />
-            <SettingToggle
-              icon={Bug}
-              label="Transaction logging"
-              description="Log transaction begin, commit, and rollback events"
-              checked={settings.transactionLogging}
-              onChange={(checked) => setSetting('transactionLogging', checked)}
-            />
-            <SettingToggle
-              icon={Wrench}
-              label="Automatic maintenance"
-              description="Run maintenance tasks automatically after indexing"
-              checked={settings.automaticMaintenance}
-              onChange={(checked) => setSetting('automaticMaintenance', checked)}
-            />
-            <SettingToggle
-              icon={Shield}
-              label="Integrity check on startup"
-              description="Verify database integrity when Echo starts"
-              checked={settings.enableIntegrityCheckOnStartup}
-              onChange={(checked) =>
-                setSetting('enableIntegrityCheckOnStartup', checked)
-              }
-            />
+        </SettingRow>
+        <SettingRow
+          label="Automatic maintenance"
+          description="Run maintenance tasks automatically after indexing"
+        >
+          <Toggle
+            checked={settings.automaticMaintenance}
+            onChange={(checked) => setSetting('automaticMaintenance', checked)}
+            ariaLabel="Automatic maintenance"
+            size="md"
+          />
+        </SettingRow>
+        <SettingRow
+          label="Integrity check on startup"
+          description="Verify database integrity when Echo starts"
+        >
+          <Toggle
+            checked={settings.enableIntegrityCheckOnStartup}
+            onChange={(checked) =>
+              setSetting('enableIntegrityCheckOnStartup', checked)
+            }
+            ariaLabel="Integrity check on startup"
+            size="md"
+          />
+        </SettingRow>
+        <SettingRow label="Migration behavior">
+          <Select
+            value={settings.migrationBehavior}
+            options={MIGRATION_OPTIONS}
+            onChange={(value) =>
+              setSetting(
+                'migrationBehavior',
+                value as 'auto' | 'prompt' | 'block'
+              )
+            }
+            className="w-48"
+          />
+        </SettingRow>
+        <SettingRow label="Recovery behavior">
+          <Select
+            value={settings.recoveryBehavior}
+            options={RECOVERY_OPTIONS}
+            onChange={(value) =>
+              setSetting(
+                'recoveryBehavior',
+                value as 'auto' | 'notify' | 'manual'
+              )
+            }
+            className="w-48"
+          />
+        </SettingRow>
 
+        <div className="mt-4 rounded-xl border border-(--border) bg-(--panel) p-4">
+          <div className="flex items-start justify-between gap-4">
             <div>
-              <label className="text-xs font-medium theme-text">
-                Migration behavior
-              </label>
-              <select
-                value={settings.migrationBehavior}
-                onChange={(e) =>
-                  setSetting(
-                    'migrationBehavior',
-                    e.target.value as 'auto' | 'prompt' | 'block'
-                  )
-                }
-                className="mt-1.5 w-full rounded-lg border border-(--border-strong) bg-(--panel) px-3 py-2 text-sm theme-text outline-none focus:border-(--accent)"
-              >
-                <option value="auto">Apply automatically</option>
-                <option value="prompt">Prompt before migrating</option>
-                <option value="block">Block until manual action</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="text-xs font-medium theme-text">
-                Recovery behavior
-              </label>
-              <select
-                value={settings.recoveryBehavior}
-                onChange={(e) =>
-                  setSetting(
-                    'recoveryBehavior',
-                    e.target.value as 'auto' | 'notify' | 'manual'
-                  )
-                }
-                className="mt-1.5 w-full rounded-lg border border-(--border-strong) bg-(--panel) px-3 py-2 text-sm theme-text outline-none focus:border-(--accent)"
-              >
-                <option value="auto">Recover automatically</option>
-                <option value="notify">Notify and wait</option>
-                <option value="manual">Manual only</option>
-              </select>
+              <p className="text-sm font-medium theme-text">Maintenance</p>
+              <p className="text-xs theme-text-secondary">
+                Run database maintenance operations
+              </p>
             </div>
           </div>
-
-          <div className="mt-5 flex flex-wrap gap-3">
-            <button
-              onClick={handleVerify}
-              className="rounded-lg border border-(--border) bg-(--panel) px-3 py-2 text-xs font-medium theme-text transition hover:bg-(--surface)"
-            >
-              Verify Index
-            </button>
-            <button
-              onClick={handleRepair}
-              className="rounded-lg bg-(--accent) px-3 py-2 text-xs font-medium text-white transition hover:bg-(--accent-hover)"
-            >
-              Repair Index
-            </button>
-            <button
-              onClick={() => handleMaintenance({})}
-              disabled={isRunningMaintenance}
-              className="rounded-lg border border-(--border) bg-(--panel) px-3 py-2 text-xs font-medium theme-text transition hover:bg-(--surface) disabled:opacity-50"
-            >
-              {isRunningMaintenance ? 'Running…' : 'Run Maintenance'}
-            </button>
-            <button
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button variant="secondary" size="sm" onClick={handleVerify}>
+              Verify
+            </Button>
+            <Button variant="primary" size="sm" onClick={handleRepair}>
+              Repair
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => handleMaintenance({ vacuum: true })}
               disabled={isRunningMaintenance}
-              className="rounded-lg border border-(--border) bg-(--panel) px-3 py-2 text-xs font-medium theme-text transition hover:bg-(--surface) disabled:opacity-50"
             >
-              Run VACUUM
-            </button>
+              Vacuum
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => handleMaintenance({})}
+              disabled={isRunningMaintenance}
+            >
+              {isRunningMaintenance ? 'Running…' : 'Optimize'}
+            </Button>
+            <Button variant="danger" size="sm" onClick={handleResetDatabase}>
+              Reset database…
+            </Button>
           </div>
 
           {verifyReport && (
-            <div className="mt-4 rounded-lg border border-(--border) bg-(--panel) p-3">
+            <div className="mt-3 rounded-lg border border-(--border) bg-(--surface) p-3">
               <div className="flex items-center gap-2">
                 {verifyReport.healthy ? (
                   <>
-                    <Shield size={14} className="text-green-600" />
-                    <span className="text-xs font-medium text-green-600">
+                    <Shield size={14} className="text-(--success)" />
+                    <span className="text-sm font-medium text-(--success)">
                       Index is healthy
                     </span>
                   </>
                 ) : (
                   <>
-                    <AlertTriangle size={14} className="text-yellow-600" />
-                    <span className="text-xs font-medium text-yellow-600">
+                    <AlertTriangle size={14} className="text-(--warning)" />
+                    <span className="text-sm font-medium text-(--warning)">
                       {verifyReport.issues.length} issue(s) found
                     </span>
                   </>
@@ -595,10 +634,13 @@ export function SettingsPage() {
               {!verifyReport.healthy && (
                 <ul className="mt-2 space-y-1">
                   {verifyReport.issues.map((issue, i) => (
-                    <li key={i} className="text-xs theme-text-secondary">
+                    <li key={i} className="text-sm theme-text-secondary">
                       {issue.description}
                       {issue.details && (
-                        <span className="theme-text-tertiary"> — {issue.details}</span>
+                        <span className="theme-text-tertiary">
+                          {' '}
+                          — {issue.details}
+                        </span>
                       )}
                     </li>
                   ))}
@@ -608,10 +650,10 @@ export function SettingsPage() {
           )}
 
           {repairReport && (
-            <div className="mt-4 rounded-lg border border-(--border) bg-(--panel) p-3">
+            <div className="mt-3 rounded-lg border border-(--border) bg-(--surface) p-3">
               <div className="flex items-center gap-2">
                 <Wrench size={14} className="text-(--accent)" />
-                <span className="text-xs font-medium theme-text">
+                <span className="text-sm font-medium theme-text">
                   {repairReport.issues.length > 0
                     ? `Repair attempted on ${repairReport.issues.length} issue(s)`
                     : 'No issues to repair'}
@@ -621,14 +663,14 @@ export function SettingsPage() {
           )}
 
           {maintenanceResult && (
-            <div className="mt-4 rounded-lg border border-(--border) bg-(--panel) p-3">
+            <div className="mt-3 rounded-lg border border-(--border) bg-(--surface) p-3">
               <div className="flex items-center gap-2">
                 {maintenanceResult.success ? (
-                  <Shield size={14} className="text-green-600" />
+                  <Shield size={14} className="text-(--success)" />
                 ) : (
-                  <AlertTriangle size={14} className="text-yellow-600" />
+                  <AlertTriangle size={14} className="text-(--warning)" />
                 )}
-                <span className="text-xs font-medium theme-text">
+                <span className="text-sm font-medium theme-text">
                   {maintenanceResult.success
                     ? 'Maintenance complete'
                     : 'Maintenance completed with warnings'}
@@ -636,95 +678,120 @@ export function SettingsPage() {
               </div>
               <ul className="mt-2 space-y-1">
                 {maintenanceResult.operations.map((op) => (
-                  <li key={op.name} className="text-xs theme-text-secondary">
+                  <li key={op.name} className="text-sm theme-text-secondary">
                     {op.name}: {op.success ? 'ok' : 'failed'}
                     {op.message && (
-                      <span className="theme-text-tertiary"> — {op.message}</span>
+                      <span className="theme-text-tertiary">
+                        {' '}
+                        — {op.message}
+                      </span>
                     )}
                   </li>
                 ))}
               </ul>
             </div>
           )}
-        </section>
-
-        <section className="rounded-xl bg-(--surface) p-5">
-          <SectionHeader
-            icon={Info}
-            title="About Echo"
-            description="Version 0.6.0 — Milestone 7"
-          />
-          <p className="mt-4 text-xs leading-relaxed theme-text-secondary">
-            Echo is a local desktop search engine. Your files are indexed and
-            stored entirely on this device. No data is sent to external
-            services.
-          </p>
-        </section>
-      </div>
-    </div>
+        </div>
+      </Collapsible>
+    </PageShell>
   );
 }
 
-function SectionHeader({
-  icon: Icon,
-  title,
-  description,
-}: {
-  icon: typeof RefreshCw;
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="flex items-center gap-2.5">
-      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-(--panel) theme-text-secondary">
-        <Icon size={16} strokeWidth={1.6} />
-      </div>
-      <div>
-        <h2 className="text-sm font-medium theme-text">{title}</h2>
-        <p className="text-xs theme-text-secondary">{description}</p>
-      </div>
-    </div>
-  );
-}
+function IndexHealthHeader() {
+  const { stats, loadHealthStats } = useHealthStore();
+  const { startIndexing } = useIndexStore();
 
-function SettingToggle({
-  icon: Icon,
-  label,
-  description,
-  checked,
-  onChange,
-}: {
-  icon: typeof RefreshCw;
-  label: string;
-  description: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-}) {
+  useEffect(() => {
+    loadHealthStats();
+  }, [loadHealthStats]);
+
+  if (!stats) {
+    return (
+      <Card className="p-4">
+        <p className="text-sm theme-text-secondary">Loading index health…</p>
+      </Card>
+    );
+  }
+
+  const isHealthy = stats.status === 'healthy';
+  const isWarning = stats.status === 'warning';
+
   return (
-    <div className="flex items-center justify-between gap-4">
-      <div className="flex items-center gap-2.5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-(--panel) theme-text-secondary">
-          <Icon size={16} strokeWidth={1.6} />
+    <Card className="p-4">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex items-start gap-3">
+          <div
+            className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
+              isHealthy
+                ? 'bg-(--success-soft)'
+                : isWarning
+                ? 'bg-(--warning-soft)'
+                : 'bg-(--danger-soft)'
+            }`}
+          >
+            {isHealthy ? (
+              <CheckCircle2 size={20} className="text-(--success)" />
+            ) : isWarning ? (
+              <AlertTriangle size={20} className="text-(--warning)" />
+            ) : (
+              <XCircle size={20} className="text-(--danger)" />
+            )}
+          </div>
+          <div>
+            <h2 className="text-base font-medium theme-text">Index Health</h2>
+            <p className="text-xs theme-text-secondary">
+              {isHealthy
+                ? 'Your index is up to date and operating normally.'
+                : isWarning
+                ? 'Review the details below for attention items.'
+                : 'Errors detected. Check the Broken Files report.'}
+            </p>
+          </div>
         </div>
-        <div>
-          <h3 className="text-sm font-medium theme-text">{label}</h3>
-          <p className="text-xs theme-text-secondary">{description}</p>
-        </div>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => startIndexing()}
+          className="shrink-0"
+        >
+          <RefreshCw size={14} />
+          Sync now
+        </Button>
       </div>
-      <button
-        onClick={() => onChange(!checked)}
-        className={`relative h-5 w-9 rounded-full transition ${
-          checked ? 'bg-(--accent)' : 'bg-(--border-strong)'
-        }`}
-        aria-checked={checked}
-        role="switch"
-      >
-        <span
-          className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform dark:bg-black ${
-            checked ? 'translate-x-[18px]' : 'translate-x-0.5'
-          }`}
+
+      <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <HealthStat label="Files" value={stats.indexedFiles.toLocaleString()} />
+        <HealthStat
+          label="Failed"
+          value={stats.failedFiles.toLocaleString()}
+          highlight={stats.failedFiles > 0 ? 'danger' : undefined}
         />
-      </button>
+        <HealthStat label="Folders" value={stats.totalFolders.toLocaleString()} />
+        <HealthStat label="Terms" value={stats.totalTerms.toLocaleString()} />
+      </div>
+    </Card>
+  );
+}
+
+function HealthStat({
+  label,
+  value,
+  highlight,
+}: {
+  label: string;
+  value: string;
+  highlight?: 'danger';
+}) {
+  return (
+    <div className="rounded-lg bg-(--panel) px-3 py-2">
+      <p
+        className={`text-base font-semibold theme-text ${
+          highlight === 'danger' ? 'text-(--danger)' : ''
+        }`}
+      >
+        {value}
+      </p>
+      <p className="text-xs theme-text-secondary">{label}</p>
     </div>
   );
 }

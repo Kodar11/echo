@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { tokenize, tokenizeQuery } from './tokenizer.js';
+import { tokenize, tokenizeQuery, tokenizeText, tokenizeWithOffsets } from './tokenizer.js';
 
 describe('tokenize', () => {
   it('splits text into tokens and positions', () => {
@@ -41,6 +41,36 @@ describe('tokenize', () => {
     });
     expect(doc.tokens).toEqual(['quick', 'brown', 'fox']);
     expect(doc.language).toBe('eng');
+  });
+});
+
+describe('shared tokenization', () => {
+  it('keeps original-stream positions when stop words are removed', () => {
+    const doc = tokenize('The quick brown fox jumps over the lazy dog near the river bank today', {
+      detectLanguage: true,
+      removeStopWords: true,
+    });
+    expect(doc.language).toBe('eng');
+    expect(doc.positions.has('the')).toBe(false);
+    expect(doc.positions.get('quick')).toEqual([1]);
+    expect(doc.positions.get('lazy')).toEqual([7]);
+  });
+
+  it('produces the same terms for composed and decomposed text', () => {
+    expect(tokenizeText('café')).toEqual(tokenizeText('café'));
+    expect(tokenizeText('CAFÉ')).toEqual(['cafe']);
+  });
+
+  it('maps tokens to character offsets for snippets', () => {
+    const text = 'Hello, wörld!';
+    const tokens = tokenizeWithOffsets(text);
+    expect(tokens.map((t) => t.token)).toEqual(['hello', 'world']);
+    expect(text.slice(tokens[1].start, tokens[1].end)).toBe('wörld');
+  });
+
+  it('splits compatibility characters exactly like the indexer', () => {
+    expect(tokenizeText('½')).toEqual(['1', '2']);
+    expect(tokenizeWithOffsets('½').map((t) => t.token)).toEqual(['1', '2']);
   });
 });
 

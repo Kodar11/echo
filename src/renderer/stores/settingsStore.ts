@@ -31,6 +31,8 @@ const defaultSettings: AppSettings = {
   migrationBehavior: 'auto',
   recoveryBehavior: 'auto',
   enableIntegrityCheckOnStartup: true,
+  themePreference: 'system',
+  sidebarCollapsed: false,
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

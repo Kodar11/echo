@@ -1,16 +1,11 @@
 import fs from 'fs';
 import path from 'path';
-import { app, BrowserWindow, dialog, Menu, shell } from 'electron';
+import { app, BrowserWindow, dialog, shell } from 'electron';
 import { ipcMainHandle, ipcMainOn, ipcWebContentsSend, isDev } from './util.js';
 import { getPreloadPath, getUIPath } from './pathResolver.js';
 import { createMenu } from './menu.js';
-import {
-  addFolder,
-  getFolderById,
-  getFolders,
-  removeFolder,
-  setFolderEnabled,
-} from '../database/folders.js';
+import { closeDatabase } from '../database/connection.js';
+import { getFolders } from '../database/folders.js';
 import {
   getIndexingFailures,
   setIndexingFailureIgnored,
@@ -24,12 +19,26 @@ import type { IgnoreRuleRecord } from '../services/ignore/IgnoreRuleManager.js';
 
 let mainWindow: BrowserWindow | null = null;
 
+// The index lock and crash recovery assume a single process owns the
+// database, so a second instance just focuses the first one.
+if (!app.requestSingleInstanceLock()) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  });
+}
+
 app.on('ready', () => {
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
     minWidth: 900,
     minHeight: 600,
+    frame: false,
+    titleBarStyle: 'hidden',
     webPreferences: {
       preload: getPreloadPath(),
     },
@@ -41,15 +50,29 @@ app.on('ready', () => {
     mainWindow.loadFile(getUIPath());
   }
 
+  // Forward window state changes to the renderer for the custom title bar.
+  const notifyWindowState = () => {
+    if (!mainWindow) return;
+    ipcWebContentsSend(
+      IPC_CHANNELS.SUBSCRIBE_WINDOW_STATE,
+      mainWindow.webContents,
+      getWindowState(mainWindow)
+    );
+  };
+  mainWindow.on('maximize', notifyWindowState);
+  mainWindow.on('unmaximize', notifyWindowState);
+  mainWindow.on('minimize', notifyWindowState);
+  mainWindow.on('restore', notifyWindowState);
+  mainWindow.on('enter-full-screen', notifyWindowState);
+  mainWindow.on('leave-full-screen', notifyWindowState);
+
   // Register IPC handlers before any potentially slow initialization so the
   // renderer can query status as soon as it mounts.
   setupIpcHandlers();
 
-  indexManager.initialize();
-
-  // Forward queue progress to renderer
+  // Subscribe before initializing so the startup sync is reported too.
   indexManager.subscribeToProgress((progress) => {
-    if (!mainWindow) return;
+    if (!mainWindow || mainWindow.isDestroyed()) return;
     ipcWebContentsSend(
       IPC_CHANNELS.INDEXING_PROGRESS,
       mainWindow.webContents,
@@ -57,11 +80,25 @@ app.on('ready', () => {
     );
   });
 
+  indexManager.initialize();
+
   createMenu(mainWindow);
 });
 
-app.on('before-quit', () => {
-  indexManager.dispose();
+// Quit only after the indexing session (if any) has been cancelled and
+// finalized, so no run is left "in progress" and the lock is released.
+let shutdownComplete = false;
+app.on('before-quit', (event) => {
+  if (shutdownComplete) return;
+  event.preventDefault();
+  indexManager
+    .dispose()
+    .catch((err) => console.error('Shutdown cleanup failed:', err))
+    .finally(() => {
+      closeDatabase();
+      shutdownComplete = true;
+      app.quit();
+    });
 });
 
 function setupIpcHandlers() {
@@ -73,18 +110,12 @@ function setupIpcHandlers() {
     if (!fs.statSync(resolved).isDirectory()) {
       throw new Error(`Path is not a directory: ${folderPath}`);
     }
-    const folder = addFolder(resolved);
-    indexManager.restartWatchers();
-    return folder;
+    // Adding a folder starts indexing it right away.
+    return indexManager.addFolder(resolved);
   });
 
   ipcMainHandle(IPC_CHANNELS.REMOVE_FOLDER, ({ id }) => {
-    const folder = getFolderById(id);
-    if (folder) {
-      indexManager.removeFolderFiles(folder.path);
-    }
-    removeFolder(id);
-    indexManager.restartWatchers();
+    indexManager.removeFolder(id);
     return undefined;
   });
 
@@ -93,26 +124,28 @@ function setupIpcHandlers() {
   });
 
   ipcMainHandle(IPC_CHANNELS.SET_FOLDER_ENABLED, ({ id, enabled }) => {
-    const folder = setFolderEnabled(id, enabled);
+    const folder = indexManager.setFolderEnabled(id, enabled);
     if (!folder) {
       throw new Error(`Folder ${id} not found`);
     }
-    indexManager.restartWatchers();
     return folder;
   });
 
-  ipcMainHandle(IPC_CHANNELS.START_INDEXING, async () => {
-    await indexManager.startIndexing();
+  // Returns as soon as the session is started (or joined); completion and
+  // progress are reported through INDEXING_PROGRESS events.
+  ipcMainHandle(IPC_CHANNELS.START_INDEXING, () => {
+    void indexManager.startIndexing('manual');
     return undefined;
   });
 
-  ipcMainHandle(IPC_CHANNELS.STOP_INDEXING, () => {
-    indexManager.stopIndexing();
+  // Resolves once cancellation has been fully finalized.
+  ipcMainHandle(IPC_CHANNELS.STOP_INDEXING, async () => {
+    await indexManager.stopIndexing();
     return undefined;
   });
 
   ipcMainHandle(IPC_CHANNELS.GET_INDEXING_STATUS, () => {
-    return indexManager.getQueueProgress();
+    return indexManager.getProgress();
   });
 
   ipcMainHandle(IPC_CHANNELS.GET_INDEX_STATUS, () => {
@@ -127,13 +160,22 @@ function setupIpcHandlers() {
     return indexManager.getHealthStats();
   });
 
-  ipcMainHandle(IPC_CHANNELS.DELETE_INDEX, () => {
-    indexManager.deleteIndex();
+  ipcMainHandle(IPC_CHANNELS.DELETE_INDEX, async () => {
+    await indexManager.deleteIndex();
     return undefined;
   });
 
+  ipcMainHandle(IPC_CHANNELS.RESET_DATABASE, async () => {
+    await indexManager.resetDatabase();
+    return undefined;
+  });
+
+  // Only the most recent search may finish; an older one still generating
+  // snippets stops and reports `cancelled` instead of overwriting results.
+  let latestSearch = 0;
   ipcMainHandle(IPC_CHANNELS.SEARCH, async (options) => {
-    return searchEngine.search(options);
+    const searchId = ++latestSearch;
+    return searchEngine.search(options, () => searchId !== latestSearch);
   });
 
   ipcMainHandle(IPC_CHANNELS.GET_AUTOCOMPLETE_SUGGESTIONS, ({ prefix }) => {
@@ -194,8 +236,8 @@ function setupIpcHandlers() {
     return getIndexingFailures(false).map(mapFailureRecord);
   });
 
-  ipcMainHandle(IPC_CHANNELS.RETRY_INDEXING_FAILURE, async ({ path }) => {
-    await indexManager.startIndexing();
+  ipcMainHandle(IPC_CHANNELS.RETRY_INDEXING_FAILURE, ({ path: failedPath }) => {
+    indexManager.retryFailure(failedPath);
     return undefined;
   });
 
@@ -209,20 +251,16 @@ function setupIpcHandlers() {
   });
 
   ipcMainHandle(IPC_CHANNELS.ADD_IGNORE_RULE, ({ pattern, type }) => {
-    const rule = indexManager.addIgnoreRule(pattern, type);
-    indexManager.restartWatchers();
-    return mapIgnoreRuleRecord(rule);
+    return mapIgnoreRuleRecord(indexManager.addIgnoreRule(pattern, type));
   });
 
   ipcMainHandle(IPC_CHANNELS.SET_IGNORE_RULE_ENABLED, ({ id, enabled }) => {
     indexManager.setIgnoreRuleEnabled(id, enabled);
-    indexManager.restartWatchers();
     return undefined;
   });
 
   ipcMainHandle(IPC_CHANNELS.DELETE_IGNORE_RULE, ({ id }) => {
     indexManager.deleteIgnoreRule(id);
-    indexManager.restartWatchers();
     return undefined;
   });
 
@@ -259,7 +297,7 @@ function setupIpcHandlers() {
     return indexManager.verifyIndex();
   });
 
-  ipcMainHandle(IPC_CHANNELS.REPAIR_INDEX, () => {
+  ipcMainHandle(IPC_CHANNELS.REPAIR_INDEX, async () => {
     return indexManager.repairIndex();
   });
 
@@ -286,6 +324,19 @@ function setupIpcHandlers() {
         break;
     }
   });
+
+  ipcMainHandle(IPC_CHANNELS.GET_WINDOW_STATE, () => {
+    const win = BrowserWindow.getFocusedWindow();
+    return win ? getWindowState(win) : { isMaximized: false, isMinimized: false, isFullScreen: false };
+  });
+}
+
+function getWindowState(win: BrowserWindow): WindowState {
+  return {
+    isMaximized: win.isMaximized(),
+    isMinimized: win.isMinimized(),
+    isFullScreen: win.isFullScreen(),
+  };
 }
 
 function buildSettings(): AppSettings {
@@ -310,6 +361,8 @@ function buildSettings(): AppSettings {
     migrationBehavior: indexManager.getMigrationBehavior(),
     recoveryBehavior: indexManager.getRecoveryBehavior(),
     enableIntegrityCheckOnStartup: indexManager.getEnableIntegrityCheckOnStartup(),
+    themePreference: indexManager.getThemePreference(),
+    sidebarCollapsed: indexManager.getSidebarCollapsed(),
   };
 }
 
@@ -377,6 +430,12 @@ function applySetting(
       break;
     case 'enableIntegrityCheckOnStartup':
       indexManager.setEnableIntegrityCheckOnStartup(Boolean(value));
+      break;
+    case 'themePreference':
+      indexManager.setThemePreference(value as 'system' | 'light' | 'dark');
+      break;
+    case 'sidebarCollapsed':
+      indexManager.setSidebarCollapsed(Boolean(value));
       break;
   }
 }

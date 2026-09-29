@@ -2,102 +2,155 @@ import path from 'path';
 import type { FileRecord } from '../database/files.js';
 import type { FilterNode } from './queryParser.js';
 
-export function evaluateFilter(file: FileRecord, node: FilterNode): boolean {
-  switch (node.key) {
-    case 'type':
-    case 'ext':
-    case 'extension':
-      return matchesType(file, node.value);
-    case 'folder':
-      return matchesFolder(file.path, node.value);
-    case 'before':
-      return matchesBefore(file.modified_time, node.value);
-    case 'after':
-      return matchesAfter(file.modified_time, node.value);
-    case 'modified':
-      return matchesModified(file.modified_time, node.operator, node.value);
-    case 'created':
-      return matchesCreated(file, node.operator, node.value);
-    case 'size':
-      return matchesSize(file.size, node.operator, node.value);
-    case 'author':
-      return matchesAuthor(file, node.value);
-    case 'language':
-      return matchesLanguage(file, node.value);
-    default:
-      return true;
+/**
+ * Query filters (`key:value`, `key>value`, …). Every filter is validated when
+ * the query is compiled; an unknown key, operator or unparsable value is an
+ * error reported to the user, never a filter that silently matches everything.
+ */
+
+export type FilterPredicate = (file: FileRecord) => boolean;
+
+export class FilterError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FilterError';
   }
 }
 
-function matchesType(file: FileRecord, value: string): boolean {
-  const ext = (file.extension ?? path.extname(file.path)).toLowerCase();
-  const expected = value.startsWith('.') ? value.toLowerCase() : `.${value.toLowerCase()}`;
-  return ext === expected;
+type Operator = ':' | '<' | '>' | '<=' | '>=';
+
+const EQUALITY_ONLY: Operator[] = [':'];
+const COMPARISON: Operator[] = [':', '<', '>', '<=', '>='];
+
+const LANGUAGE_ALIASES: Record<string, string> = {
+  eng: 'eng',
+  en: 'eng',
+  english: 'eng',
+  hin: 'hin',
+  hi: 'hin',
+  hindi: 'hin',
+  mar: 'mar',
+  mr: 'mar',
+  marathi: 'mar',
+};
+
+interface FilterDefinition {
+  operators: Operator[];
+  compile: (operator: Operator, value: string) => FilterPredicate;
 }
 
-function matchesFolder(filePath: string, value: string): boolean {
-  const lowerPath = filePath.toLowerCase();
-  const lowerValue = value.toLowerCase();
-  return lowerPath.includes(lowerValue);
+const DEFINITIONS: Record<string, FilterDefinition> = {
+  type: { operators: EQUALITY_ONLY, compile: (_op, value) => compileType(value) },
+  folder: { operators: EQUALITY_ONLY, compile: (_op, value) => compileFolder(value) },
+  before: {
+    operators: EQUALITY_ONLY,
+    compile: (_op, value) => {
+      const range = parseDateRange(value);
+      return (file) => file.modified_time < range.start;
+    },
+  },
+  after: {
+    operators: EQUALITY_ONLY,
+    compile: (_op, value) => {
+      const range = parseDateRange(value);
+      return (file) => file.modified_time >= range.end;
+    },
+  },
+  modified: {
+    operators: COMPARISON,
+    compile: (op, value) => {
+      const test = compareRange(op, parseDateRange(value));
+      return (file) => test(file.modified_time);
+    },
+  },
+  created: {
+    operators: COMPARISON,
+    compile: (op, value) => {
+      const test = compareRange(op, parseDateRange(value));
+      return (file) => test(file.created_at ?? file.modified_time);
+    },
+  },
+  size: {
+    operators: COMPARISON,
+    compile: (op, value) => {
+      const bytes = parseSize(value);
+      return (file) => compareNumber(file.size, op, bytes);
+    },
+  },
+  author: {
+    operators: EQUALITY_ONLY,
+    compile: (_op, value) => {
+      const needle = value.toLowerCase();
+      return (file) => (file.author ? file.author.toLowerCase().includes(needle) : false);
+    },
+  },
+  language: {
+    operators: EQUALITY_ONLY,
+    compile: (_op, value) => {
+      const code = LANGUAGE_ALIASES[value.trim().toLowerCase()];
+      if (!code) {
+        throw new FilterError(
+          `Unknown language "${value}". Use one of: eng, hin, mar`
+        );
+      }
+      return (file) => file.language === code;
+    },
+  },
+};
+
+const ALIASES: Record<string, string> = {
+  ext: 'type',
+  extension: 'type',
+  lang: 'language',
+};
+
+export const FILTER_KEYS = [...Object.keys(DEFINITIONS), ...Object.keys(ALIASES)].sort();
+
+/** Validates a filter and returns its predicate. Throws FilterError. */
+export function compileFilter(node: FilterNode): FilterPredicate {
+  const key = ALIASES[node.key] ?? node.key;
+  const definition = DEFINITIONS[key];
+  if (!definition) {
+    throw new FilterError(
+      `Unknown filter "${node.key}". Valid filters: ${FILTER_KEYS.join(', ')}. ` +
+        'Put text in quotes to search for it literally.'
+    );
+  }
+  const operator = node.operator === '=' ? ':' : (node.operator as Operator);
+  if (!definition.operators.includes(operator)) {
+    throw new FilterError(
+      `Filter "${node.key}" does not support "${node.operator}" (use ${definition.operators.join(' ')})`
+    );
+  }
+  const value = node.value.trim();
+  if (!value) {
+    throw new FilterError(`Filter "${node.key}" needs a value`);
+  }
+  return definition.compile(operator, value);
 }
 
-function matchesBefore(modifiedTime: number, value: string): boolean {
-  const range = parseDateRange(value);
-  if (!range) return true;
-  return modifiedTime < range.start;
+/** Convenience for one-off checks; throws FilterError for invalid filters. */
+export function evaluateFilter(file: FileRecord, node: FilterNode): boolean {
+  return compileFilter(node)(file);
 }
 
-function matchesAfter(modifiedTime: number, value: string): boolean {
-  const range = parseDateRange(value);
-  if (!range) return true;
-  return modifiedTime > range.start;
+function compileType(value: string): FilterPredicate {
+  const normalized = value.toLowerCase().replace(/^\./, '');
+  if (!/^[a-z0-9]{1,16}$/.test(normalized)) {
+    throw new FilterError(`Invalid file type "${value}" (expected e.g. type:pdf)`);
+  }
+  const expected = `.${normalized}`;
+  return (file) => (file.extension ?? path.extname(file.path)).toLowerCase() === expected;
 }
 
-function matchesModified(
-  modifiedTime: number,
-  operator: string,
-  value: string
-): boolean {
-  const range = parseDateRange(value);
-  if (!range) return true;
-  return compareDateRange(modifiedTime, operator, range);
+function compileFolder(value: string): FilterPredicate {
+  const needle = value.replace(/[\\/]+/g, '/').toLowerCase();
+  return (file) => file.path.replace(/[\\/]+/g, '/').toLowerCase().includes(needle);
 }
 
-function matchesCreated(
-  file: FileRecord,
-  operator: string,
-  value: string
-): boolean {
-  const createdTime = file.created_at ?? file.modified_time;
-  const range = parseDateRange(value);
-  if (!range) return true;
-  return compareDateRange(createdTime, operator, range);
-}
-
-function matchesSize(size: number, operator: string, value: string): boolean {
-  const expected = parseSize(value);
-  if (expected === null) return true;
-  return compareNumber(size, operator, expected);
-}
-
-function matchesAuthor(file: FileRecord, value: string): boolean {
-  if (!file.author) return false;
-  return file.author.toLowerCase().includes(value.toLowerCase());
-}
-
-function matchesLanguage(file: FileRecord, value: string): boolean {
-  if (!file.language) return false;
-  return file.language.toLowerCase() === value.toLowerCase();
-}
-
-function compareNumber(
-  actual: number,
-  operator: string,
-  expected: number
-): boolean {
+function compareNumber(actual: number, operator: Operator, expected: number): boolean {
   switch (operator) {
     case ':':
-    case '=':
       return actual === expected;
     case '<':
       return actual < expected;
@@ -107,54 +160,98 @@ function compareNumber(
       return actual <= expected;
     case '>=':
       return actual >= expected;
-    default:
-      return true;
   }
 }
 
-interface DateRange {
+/** A half-open time interval [start, end) in epoch milliseconds. */
+export interface DateRange {
   start: number;
   end: number;
 }
 
-function parseDateRange(value: string): DateRange | null {
+/** Range semantics: `:` = within, `<` = before it, `>` = after it. */
+function compareRange(operator: Operator, range: DateRange): (time: number) => boolean {
+  switch (operator) {
+    case ':':
+      return (t) => t >= range.start && t < range.end;
+    case '<':
+      return (t) => t < range.start;
+    case '<=':
+      return (t) => t < range.end;
+    case '>':
+      return (t) => t >= range.end;
+    case '>=':
+      return (t) => t >= range.start;
+  }
+}
+
+/**
+ * Accepted forms (local time): YYYY, YYYY-MM, YYYY-MM-DD, full ISO date-time,
+ * today, yesterday, lastN{days|weeks|months|years}.
+ */
+export function parseDateRange(value: string, now = new Date()): DateRange {
   const trimmed = value.trim().toLowerCase();
-  const relative = parseRelativeDateRange(trimmed);
+
+  const relative = parseRelativeDateRange(trimmed, now);
   if (relative) return relative;
 
-  const date = new Date(value.trim());
-  if (isNaN(date.getTime())) return null;
-  return { start: date.getTime(), end: date.getTime() };
-}
-
-function compareDateRange(
-  time: number,
-  operator: string,
-  range: DateRange
-): boolean {
-  // For exact-match operators on a day-range, match any point within the day.
-  if ((operator === ':' || operator === '=') && range.start !== range.end) {
-    return time >= range.start && time < range.end;
+  let match = trimmed.match(/^(\d{4})$/);
+  if (match) {
+    const year = Number(match[1]);
+    return { start: new Date(year, 0, 1).getTime(), end: new Date(year + 1, 0, 1).getTime() };
   }
 
-  return compareNumber(time, operator, range.start);
+  match = trimmed.match(/^(\d{4})-(\d{1,2})$/);
+  if (match) {
+    const year = Number(match[1]);
+    const month = Number(match[2]) - 1;
+    if (month < 0 || month > 11) throw invalidDate(value);
+    return {
+      start: new Date(year, month, 1).getTime(),
+      end: new Date(year, month + 1, 1).getTime(),
+    };
+  }
+
+  match = trimmed.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (match) {
+    const year = Number(match[1]);
+    const month = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    const start = new Date(year, month, day);
+    if (start.getFullYear() !== year || start.getMonth() !== month || start.getDate() !== day) {
+      throw invalidDate(value);
+    }
+    return { start: start.getTime(), end: new Date(year, month, day + 1).getTime() };
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}t\d{2}:\d{2}/.test(trimmed)) {
+    const time = new Date(value.trim()).getTime();
+    if (Number.isNaN(time)) throw invalidDate(value);
+    return { start: time, end: time + 1 };
+  }
+
+  throw invalidDate(value);
 }
 
-function parseRelativeDateRange(value: string): DateRange | null {
-  const now = new Date();
-  now.setHours(0, 0, 0, 0);
+function invalidDate(value: string): FilterError {
+  return new FilterError(
+    `Invalid date "${value}" (use YYYY-MM-DD, YYYY-MM, YYYY, today, yesterday or e.g. last7days)`
+  );
+}
+
+function parseRelativeDateRange(value: string, now: Date): DateRange | null {
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today);
+  tomorrow.setDate(tomorrow.getDate() + 1);
 
   if (value === 'today') {
-    const end = new Date(now);
-    end.setDate(end.getDate() + 1);
-    return { start: now.getTime(), end: end.getTime() };
+    return { start: today.getTime(), end: tomorrow.getTime() };
   }
-
   if (value === 'yesterday') {
-    const start = new Date(now);
+    const start = new Date(today);
     start.setDate(start.getDate() - 1);
-    const end = new Date(now);
-    return { start: start.getTime(), end: end.getTime() };
+    return { start: start.getTime(), end: today.getTime() };
   }
 
   const match = value.match(/^last(\d+)(days?|weeks?|months?|years?)$/);
@@ -162,38 +259,27 @@ function parseRelativeDateRange(value: string): DateRange | null {
 
   const amount = parseInt(match[1], 10);
   const unit = match[2];
-  const start = new Date(now);
+  const start = new Date(today);
+  if (unit.startsWith('day')) start.setDate(start.getDate() - amount);
+  else if (unit.startsWith('week')) start.setDate(start.getDate() - amount * 7);
+  else if (unit.startsWith('month')) start.setMonth(start.getMonth() - amount);
+  else start.setFullYear(start.getFullYear() - amount);
 
-  if (unit.startsWith('day')) {
-    start.setDate(start.getDate() - amount);
-  } else if (unit.startsWith('week')) {
-    start.setDate(start.getDate() - amount * 7);
-  } else if (unit.startsWith('month')) {
-    start.setMonth(start.getMonth() - amount);
-  } else if (unit.startsWith('year')) {
-    start.setFullYear(start.getFullYear() - amount);
-  }
-
-  const end = new Date(now);
-  end.setDate(end.getDate() + 1);
-  return { start: start.getTime(), end: end.getTime() };
+  return { start: start.getTime(), end: tomorrow.getTime() };
 }
 
-function parseSize(value: string): number | null {
-  const trimmed = value.trim().toLowerCase();
-  const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb)?$/);
-  if (!match) return null;
+const SIZE_MULTIPLIERS: Record<string, number> = {
+  b: 1,
+  kb: 1024,
+  mb: 1024 ** 2,
+  gb: 1024 ** 3,
+  tb: 1024 ** 4,
+};
 
-  const num = parseFloat(match[1]);
-  const unit = match[2] || 'b';
-
-  const multipliers: Record<string, number> = {
-    b: 1,
-    kb: 1024,
-    mb: 1024 * 1024,
-    gb: 1024 * 1024 * 1024,
-    tb: 1024 * 1024 * 1024 * 1024,
-  };
-
-  return Math.round(num * multipliers[unit]);
+export function parseSize(value: string): number {
+  const match = value.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb|tb)?$/);
+  if (!match) {
+    throw new FilterError(`Invalid size "${value}" (use e.g. 500KB, 10MB, 1.5GB)`);
+  }
+  return Math.round(parseFloat(match[1]) * SIZE_MULTIPLIERS[match[2] ?? 'b']);
 }

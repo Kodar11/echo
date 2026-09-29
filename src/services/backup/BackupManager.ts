@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import Database from 'better-sqlite3';
 import AdmZip from 'adm-zip';
-import { getDatabase, getDatabasePath } from '../../database/connection.js';
+import { closeDatabase, getDatabase, getDatabasePath } from '../../database/connection.js';
+import { REQUIRED_TABLES, SCHEMA_VERSION } from '../../database/schema.js';
 import { getAllSettings } from '../../database/settings.js';
 import { getLogger } from '../logger/logger.js';
 
@@ -10,16 +11,6 @@ export interface BackupValidationResult {
   valid: boolean;
   error?: string;
 }
-
-const REQUIRED_TABLES = [
-  'Files',
-  'Terms',
-  'Postings',
-  'IndexedFolders',
-  'IndexMetadata',
-  'IndexingRuns',
-  'Settings',
-];
 
 export class BackupManager {
   async exportBackup(destinationPath: string): Promise<void> {
@@ -85,8 +76,15 @@ export class BackupManager {
         throw new Error('Backup is missing echo.db');
       }
 
-      // Replace current database.
+      // Replace the database only while it is closed; a stale WAL file from
+      // the old database must not be replayed onto the restored one.
+      closeDatabase();
+      for (const suffix of ['-wal', '-shm']) {
+        fs.rmSync(`${dbPath}${suffix}`, { force: true });
+      }
       fs.copyFileSync(backupDbPath, dbPath);
+      // Reopen through the validating path.
+      getDatabase();
 
       getLogger().info(
         'index',
@@ -125,13 +123,24 @@ export class BackupManager {
       try {
         zip.extractAllTo(tempDir, true);
         const dbPath = path.join(tempDir, 'echo.db');
-        const db = new Database(dbPath);
-        const tables = db
-          .prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-          )
-          .all() as { name: string }[];
-        db.close();
+        const db = new Database(dbPath, { readonly: true });
+        let version: number;
+        let tables: { name: string }[];
+        try {
+          version = Number(db.pragma('user_version', { simple: true }));
+          tables = db
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .all() as { name: string }[];
+        } finally {
+          db.close();
+        }
+
+        if (version !== SCHEMA_VERSION) {
+          return {
+            valid: false,
+            error: `Backup uses database schema version ${version}; this version of Echo requires ${SCHEMA_VERSION}`,
+          };
+        }
 
         const tableNames = tables.map((t) => t.name);
         const missing = REQUIRED_TABLES.filter(

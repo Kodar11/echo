@@ -28,10 +28,10 @@ export function ipcMainOn<Key extends keyof EventPayloadInputMapping>(
   });
 }
 
-export function ipcWebContentsSend<Key extends keyof EventPayloadInputMapping>(
+export function ipcWebContentsSend<Key extends keyof EventPayloadOutputMapping>(
   key: Key,
   webContents: WebContents,
-  payload: EventPayloadInputMapping[Key]
+  payload: EventPayloadOutputMapping[Key]
 ) {
   webContents.send(key, payload);
 }

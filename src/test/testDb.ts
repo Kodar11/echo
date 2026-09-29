@@ -16,7 +16,7 @@ export function setupTestDatabase(): { dbPath: string } {
 export function teardownTestDatabase(dbPath: string): void {
   closeDatabase();
   try {
-    fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });
+    fs.rmSync(path.dirname(dbPath), { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   } catch {
     // Ignore cleanup failures.
   }

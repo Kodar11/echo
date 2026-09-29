@@ -14,6 +14,7 @@ electron.contextBridge.exposeInMainWorld('electron', {
   getIndexStatistics: () => ipcInvoke('getIndexStatistics'),
   getHealthStats: () => ipcInvoke('getHealthStats'),
   deleteIndex: () => ipcInvoke('deleteIndex'),
+  resetDatabase: () => ipcInvoke('resetDatabase'),
   search: (input) => ipcInvoke('search', input),
   getAutocompleteSuggestions: (input) =>
     ipcInvoke('getAutocompleteSuggestions', input),
@@ -41,6 +42,9 @@ electron.contextBridge.exposeInMainWorld('electron', {
   repairIndex: () => ipcInvoke('repairIndex'),
   runMaintenance: (input) => ipcInvoke('runMaintenance', input),
   sendFrameAction: (payload) => ipcSend('sendFrameAction', payload),
+  getWindowState: () => ipcInvoke('getWindowState'),
+  subscribeWindowState: (callback) =>
+    ipcOn('subscribeWindowState', (state) => callback(state)),
 } satisfies Window['electron']);
 
 function ipcInvoke<Key extends keyof EventPayloadInputMapping>(

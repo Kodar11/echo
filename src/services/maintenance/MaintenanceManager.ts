@@ -1,11 +1,12 @@
 import type Database from 'better-sqlite3';
+import { getDatabase } from '../../database/connection.js';
 import { getLogger } from '../logger/logger.js';
 
 export class MaintenanceManager {
-  private database: Database.Database;
+  constructor(private readonly explicitDatabase?: Database.Database) {}
 
-  constructor(database: Database.Database) {
-    this.database = database;
+  private get database(): Database.Database {
+    return this.explicitDatabase ?? getDatabase();
   }
 
   runMaintenance(options: { vacuum?: boolean; analyze?: boolean } = {}): MaintenanceResult {

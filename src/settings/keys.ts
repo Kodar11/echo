@@ -23,6 +23,13 @@ export const SETTING_KEYS = {
   migrationBehavior: 'migration_behavior',
   recoveryBehavior: 'recovery_behavior',
   enableIntegrityCheckOnStartup: 'enable_integrity_check_on_startup',
+
+  // Indexing configuration that produced the current index (see indexingSettings.ts).
+  indexedFingerprint: 'indexed_fingerprint',
+
+  // Phase 8 — UI Preferences
+  themePreference: 'theme_preference',
+  sidebarCollapsed: 'sidebar_collapsed',
 } as const;
 
 export type SettingKey = keyof typeof SETTING_KEYS;

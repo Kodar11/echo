@@ -2,6 +2,8 @@ import { FolderOpen, ExternalLink } from 'lucide-react';
 import { FileIcon } from './FileIcon.js';
 import { SnippetHighlighter } from './SnippetHighlighter.js';
 import { getBasename, getDirname, getExtension } from '../lib/path.js';
+import { Badge } from './ui/Badge.js';
+import { IconButton } from './ui/IconButton.js';
 
 interface SearchResultItemProps {
   result: SearchResult;
@@ -24,7 +26,7 @@ export function SearchResultItem({
   return (
     <button
       onClick={onOpen}
-      className={`group relative flex w-full items-start gap-3 rounded-xl border p-3.5 text-left transition ${
+      className={`group relative flex w-full items-start gap-3 rounded-xl border p-3.5 text-left transition focus-ring ${
         isSelected
           ? 'border-(--accent) bg-(--accent-soft)'
           : 'border-transparent bg-(--surface) hover:bg-(--panel)'
@@ -42,9 +44,9 @@ export function SearchResultItem({
                 {result.filename}
               </h3>
               {extension && (
-                <span className="shrink-0 rounded-md bg-(--panel) px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-(--text-secondary)">
+                <Badge variant="default" className="uppercase tracking-wide">
                   {extension.slice(1)}
-                </span>
+                </Badge>
               )}
             </div>
             <p className="mt-0.5 truncate text-xs theme-text-tertiary">
@@ -53,14 +55,14 @@ export function SearchResultItem({
           </div>
 
           <div className="flex shrink-0 items-center gap-1 opacity-0 transition group-hover:opacity-100">
-            <button
+            <IconButton
               onClick={onOpenFolder}
-              className="rounded-md p-1.5 text-(--text-tertiary) transition hover:bg-(--panel) hover:theme-text"
-              title="Open containing folder"
+              tooltip="Open containing folder"
+              className="h-7 w-7"
             >
               <FolderOpen size={14} strokeWidth={1.8} />
-            </button>
-            <span className="rounded-md p-1.5 text-(--text-tertiary)">
+            </IconButton>
+            <span className="flex h-7 w-7 items-center justify-center rounded-lg text-(--text-tertiary)">
               <ExternalLink size={14} strokeWidth={1.8} />
             </span>
           </div>
@@ -81,7 +83,7 @@ export function SearchResultItem({
           ))}
         </div>
 
-        <div className="mt-2 flex items-center gap-3 text-[11px] theme-text-tertiary">
+        <div className="mt-2 flex items-center gap-3 text-micro theme-text-tertiary">
           <span>{formatBytes(result.size)}</span>
           <span>•</span>
           <span>{formatRelativeTime(result.modifiedTime)}</span>

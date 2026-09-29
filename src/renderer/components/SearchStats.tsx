@@ -7,7 +7,7 @@ export function SearchStats({ totalCount, durationMs }: SearchStatsProps) {
   if (totalCount === 0) return null;
 
   return (
-    <div className="flex items-center gap-2 text-[11px] theme-text-tertiary">
+    <div className="flex items-center gap-2 text-micro theme-text-tertiary">
       <span>
         {totalCount} result{totalCount === 1 ? '' : 's'}
       </span>

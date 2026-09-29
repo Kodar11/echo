@@ -1,3 +1,4 @@
+import fs from 'fs/promises';
 import JSZip from 'jszip';
 import mammoth from 'mammoth';
 import {
@@ -7,28 +8,22 @@ import {
 } from './extractor.js';
 
 async function readDocxCoreProps(
-  filePath: string
+  buffer: Buffer
 ): Promise<{ author?: string; createdAt?: number }> {
   try {
-    const fs = await import('fs/promises');
-    const buffer = await fs.readFile(filePath);
     const zip = await JSZip.loadAsync(buffer);
     const coreXml = await zip.file('docProps/core.xml')?.async('string');
     if (!coreXml) return {};
 
-    const authorMatch = coreXml.match(
-      /<dc:creator>([^<]*)<\/dc:creator>/
-    );
-    const createdMatch = coreXml.match(
-      /<dcterms:created[^>]*>([^<]*)<\/dcterms:created>/
-    );
+    const authorMatch = coreXml.match(/<dc:creator>([^<]*)<\/dc:creator>/);
+    const createdMatch = coreXml.match(/<dcterms:created[^>]*>([^<]*)<\/dcterms:created>/);
 
     return {
       author: authorMatch?.[1]?.trim() || undefined,
       createdAt: parseDateToTimestamp(createdMatch?.[1]),
     };
-  } catch (err) {
-    console.error(`Failed to read DOCX metadata for ${filePath}:`, err);
+  } catch {
+    // Metadata is optional; text extraction reports real problems.
     return {};
   }
 }
@@ -36,10 +31,11 @@ async function readDocxCoreProps(
 export const docxExtractor: FileExtractor = {
   extensions: ['.docx'],
   async extract(filePath: string) {
-    const [textResult, metadata] = await Promise.all([
-      mammoth.extractRawText({ path: filePath }),
-      readDocxCoreProps(filePath),
-    ]);
+    // Read once; both parsers work on the same buffer, so no file handle is
+    // left open if one of them fails.
+    const buffer = await fs.readFile(filePath);
+    const textResult = await mammoth.extractRawText({ buffer });
+    const metadata = await readDocxCoreProps(buffer);
 
     return {
       text: normalizeText(textResult.value),

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   FileText,
   FolderOpen,
   Loader2,
@@ -13,6 +14,9 @@ import { SearchResultItem } from '../components/SearchResultItem.js';
 import { SearchScopeSelector } from '../components/SearchScopeSelector.js';
 import { SearchSortSelector } from '../components/SearchSortSelector.js';
 import { SearchStats } from '../components/SearchStats.js';
+import { Input } from '../components/ui/Input.js';
+import { ProgressBar } from '../components/ui/ProgressBar.js';
+import { Badge } from '../components/ui/Badge.js';
 
 export function SearchPage() {
   const {
@@ -20,6 +24,7 @@ export function SearchPage() {
     results,
     suggestions,
     isSearching,
+    error,
     totalCount,
     durationMs,
     sort,
@@ -111,9 +116,9 @@ export function SearchPage() {
             <Search
               size={18}
               strokeWidth={1.8}
-              className="absolute left-4 top-1/2 -translate-y-1/2 text-(--text-tertiary)"
+              className="absolute left-3.5 top-1/2 -translate-y-1/2 text-(--text-tertiary)"
             />
-            <input
+            <Input
               ref={inputRef}
               type="text"
               value={query}
@@ -125,13 +130,11 @@ export function SearchPage() {
               onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
               onKeyDown={handleKeyDown}
               placeholder="Search your files..."
-              disabled={status.status === 'indexing' && status.total === 0}
-              className="h-12 w-full rounded-2xl border border-(--border-strong) bg-(--panel) pl-11 pr-24 text-sm theme-text shadow-sm outline-none transition placeholder:text-(--text-tertiary) focus:border-(--accent) focus:ring-[3px] focus:ring-(--ring) disabled:opacity-50"
+              disabled={status.status === 'indexing' && status.indexedFiles === 0 && status.total === 0}
+              className="h-12 rounded-2xl pl-11 pr-24 shadow-sm"
             />
             <div className="pointer-events-none absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1.5">
-              <span className="rounded-md border border-(--border-strong) bg-(--surface) px-1.5 py-0.5 text-[11px] font-medium theme-text-tertiary">
-                {shortcutLabel}
-              </span>
+              <Badge variant="default">{shortcutLabel}</Badge>
               {isSearching && (
                 <Loader2
                   size={14}
@@ -198,12 +201,21 @@ export function SearchPage() {
                   ? `Processing ${status.currentFile}`
                   : 'Scanning your folders...'
               }
+              isLoading
             />
           )}
 
-          {query && !isSearching && results.length === 0 && (
+          {query && !isSearching && error && (
             <EmptyState
-              icon={Search}
+              icon={AlertTriangle}
+              title={error.kind === 'filter' ? 'Invalid filter' : 'Invalid query'}
+              description={error.message}
+            />
+          )}
+
+          {query && !isSearching && !error && results.length === 0 && (
+            <EmptyState
+              icon={FolderOpen}
               title="No results"
               description={`No files matched "${query}".`}
             />
@@ -254,12 +266,12 @@ export function SearchPage() {
                   {status.processed} / {status.total}
                 </span>
               </div>
-              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-(--border-strong)">
-                <div
-                  className="h-full rounded-full bg-(--accent) transition-all"
-                  style={{ width: `${progressPercent}%` }}
-                />
-              </div>
+              <ProgressBar
+                value={status.processed}
+                max={status.total}
+                size="md"
+                className="mt-2"
+              />
             </div>
           )}
 

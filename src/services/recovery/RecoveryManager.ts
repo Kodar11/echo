@@ -1,42 +1,59 @@
 import type Database from 'better-sqlite3';
+import { getDatabase } from '../../database/connection.js';
 import {
-  getFileCount,
-  getFilePathsByPrefix,
+  computeRestingStatus,
   getIndexMetadata,
-  getInProgressRuns,
-  markRunFailed,
-  recordIndexingFailure,
   setIndexingStatus,
-} from '../../database/index.js';
+} from '../../database/indexMetadata.js';
+import { getInProgressRuns, markRunInterrupted } from '../../database/indexingRuns.js';
 import { getLogger } from '../logger/logger.js';
 
-export class RecoveryManager {
-  private database: Database.Database;
+export interface RecoveryResultRecord {
+  recovered: boolean;
+  interruptedRuns: number;
+  partialFiles: number;
+  staleLockReleased: boolean;
+  message: string;
+}
 
-  constructor(database: Database.Database) {
-    this.database = database;
+/**
+ * Cleans up after a session that ended without finalization (crash, kill,
+ * power loss). Must run once at startup, before any indexing session, while
+ * this process is the only instance (see requestSingleInstanceLock in main).
+ */
+export class RecoveryManager {
+  constructor(private readonly explicitDatabase?: Database.Database) {}
+
+  private get database(): Database.Database {
+    return this.explicitDatabase ?? getDatabase();
   }
 
   /**
-   * Detects and repairs the aftermath of an unexpected shutdown.
-   * Should be called once during startup, before normal indexing begins.
+   * @param autoRecover when false, only the bookkeeping required for indexing
+   *   to work again (runs, lock, status) is repaired; partially written files
+   *   are reported but left in place.
    */
-  checkAndRecover(autoRecover = true): RecoveryResult {
-    getLogger().info('index', 'RecoveryManager', 'Checking for interrupted indexing sessions');
-
+  checkAndRecover(autoRecover = true): RecoveryResultRecord {
+    const db = this.database;
     const metadata = getIndexMetadata();
     const inProgressRuns = getInProgressRuns();
     const partialFiles = this.findPartialFiles();
+    const lockRow = db.prepare('SELECT owner FROM IndexLock WHERE id = 1').get() as
+      | { owner: string }
+      | undefined;
 
-    const interruptedRuns = inProgressRuns.length;
     const needsRecovery =
-      metadata.status === 'indexing' || interruptedRuns > 0 || partialFiles.length > 0;
+      metadata.status === 'indexing' ||
+      inProgressRuns.length > 0 ||
+      partialFiles.length > 0 ||
+      lockRow !== undefined;
 
     if (!needsRecovery) {
       return {
         recovered: false,
         interruptedRuns: 0,
         partialFiles: 0,
+        staleLockReleased: false,
         message: 'No interrupted indexing session found.',
       };
     }
@@ -44,78 +61,60 @@ export class RecoveryManager {
     getLogger().warn(
       'index',
       'RecoveryManager',
-      `Interrupted session detected: ${interruptedRuns} run(s), ${partialFiles.length} partial file(s)`
+      `Interrupted session detected: ${inProgressRuns.length} run(s), ${partialFiles.length} partial file(s), lock=${lockRow?.owner ?? 'none'}`
     );
 
-    // Mark all in-progress runs as failed.
-    for (const run of inProgressRuns) {
-      markRunFailed(run.id, 'Interrupted by unexpected shutdown');
-    }
-
-    // Clean up partial files: files with no postings are re-marked for indexing.
-    if (partialFiles.length > 0) {
-      for (const filePath of partialFiles) {
-        recordIndexingFailure(
-          filePath,
-          'extraction_failed',
-          'Partially indexed during previous session; will retry'
-        );
+    db.transaction(() => {
+      for (const run of inProgressRuns) {
+        markRunInterrupted(run.id, 'Interrupted by unexpected shutdown');
       }
-    }
+      if (lockRow) {
+        db.prepare('DELETE FROM IndexLock WHERE id = 1').run();
+      }
+      if (autoRecover && partialFiles.length > 0) {
+        // Remove them entirely; the next sync sees them as new and re-indexes.
+        db.exec(`DELETE FROM Files
+                 WHERE doc_length > 0
+                   AND NOT EXISTS (SELECT 1 FROM Postings p WHERE p.file_id = Files.id)`);
+      }
+    })();
 
-    // Reset metadata to a healthy state.
-    setIndexingStatus('indexed');
+    setIndexingStatus(computeRestingStatus());
 
-    const result: RecoveryResult = {
+    const result: RecoveryResultRecord = {
       recovered: true,
-      interruptedRuns,
+      interruptedRuns: inProgressRuns.length,
       partialFiles: partialFiles.length,
-      message: `Recovered from interrupted indexing session: ${interruptedRuns} run(s) marked failed, ${partialFiles.length} partial file(s) queued for re-indexing.`,
+      staleLockReleased: lockRow !== undefined,
+      message:
+        `Recovered from an interrupted indexing session: ${inProgressRuns.length} run(s) marked failed` +
+        (partialFiles.length > 0
+          ? autoRecover
+            ? `, ${partialFiles.length} partially indexed file(s) scheduled for re-indexing`
+            : `, ${partialFiles.length} partially indexed file(s) left for manual repair`
+          : '') +
+        '.',
     };
-
     getLogger().info('index', 'RecoveryManager', result.message);
-
     return result;
   }
 
-  /**
-   * Returns file paths that exist in Files but have no postings.
-   * These are the result of a crash during indexing.
-   */
+  /** Files that have content (doc_length > 0) but no postings. */
   findPartialFiles(): string[] {
     const rows = this.database
       .prepare(
-        `SELECT f.path
-         FROM Files f
-         LEFT JOIN Postings p ON p.file_id = f.id
-         GROUP BY f.id
-         HAVING COUNT(p.term_id) = 0`
+        `SELECT f.path FROM Files f
+         WHERE f.doc_length > 0
+           AND NOT EXISTS (SELECT 1 FROM Postings p WHERE p.file_id = f.id)`
       )
       .all() as { path: string }[];
     return rows.map((r) => r.path);
   }
 
-  /**
-   * Recomputes metadata counters from actual table counts.
-   */
   reconcileMetadataCounters(): void {
-    const fileCount = getFileCount();
-    const termCount = this.database
-      .prepare('SELECT COUNT(*) as count FROM Terms')
-      .get() as { count: number };
-
-    this.database
-      .prepare(
-        `UPDATE IndexMetadata
-         SET total_indexed_files = ?, total_indexed_terms = ?
-         WHERE id = 1`
-      )
-      .run(fileCount, termCount.count);
-
-    getLogger().info(
-      'index',
-      'RecoveryManager',
-      `Reconciled metadata counters: ${fileCount} files, ${termCount.count} terms`
-    );
+    this.database.exec(`UPDATE IndexMetadata SET
+      total_indexed_files = (SELECT COUNT(*) FROM Files),
+      total_indexed_terms = (SELECT COUNT(*) FROM Terms)
+      WHERE id = 1`);
   }
 }

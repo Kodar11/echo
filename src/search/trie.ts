@@ -49,22 +49,19 @@ export class Trie {
     return false;
   }
 
-  find(prefix: string): string[] {
+  /** Terms starting with `prefix`, at most `limit` of them (depth-first). */
+  find(prefix: string, limit = Infinity): string[] {
     let node = this.root;
     for (const char of prefix) {
       node = node.children.get(char) as TrieNode;
       if (!node) return [];
     }
-    return this.collectTerms(node);
-  }
-
-  private collectTerms(node: TrieNode): string[] {
     const results: string[] = [];
-    if (node.isEnd && node.term) {
-      results.push(node.term);
-    }
-    for (const child of node.children.values()) {
-      results.push(...this.collectTerms(child));
+    const stack: TrieNode[] = [node];
+    while (stack.length > 0 && results.length < limit) {
+      const current = stack.pop() as TrieNode;
+      if (current.isEnd && current.term) results.push(current.term);
+      stack.push(...Array.from(current.children.values()).reverse());
     }
     return results;
   }

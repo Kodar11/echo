@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { getDatabase } from '../../database/connection.js';
 import { getLogger } from '../logger/logger.js';
 
 export interface LockContext {
@@ -14,62 +15,57 @@ export interface LockRecord {
   context: string | null;
 }
 
-const DEFAULT_LOCK_TTL_MS = 5 * 60 * 1000; // 5 minutes
+/**
+ * Persistent index lock. It guards the index against concurrent writers across
+ * processes and lets startup detect a session that died without cleanup. The
+ * owner must renew it periodically while a session runs; an expired lock is
+ * considered stale and can be taken over.
+ */
+export const DEFAULT_LOCK_TTL_MS = 2 * 60 * 1000;
 
 export class LockManager {
-  private database: Database.Database;
-  private lockTtlMs: number;
+  constructor(
+    private readonly explicitDatabase?: Database.Database,
+    private readonly lockTtlMs = DEFAULT_LOCK_TTL_MS
+  ) {}
 
-  constructor(database: Database.Database, lockTtlMs = DEFAULT_LOCK_TTL_MS) {
-    this.database = database;
-    this.lockTtlMs = lockTtlMs;
+  private get database(): Database.Database {
+    return this.explicitDatabase ?? getDatabase();
+  }
+
+  getTtlMs(): number {
+    return this.lockTtlMs;
   }
 
   acquire(owner: string, context: LockContext = {}): boolean {
-    this.recoverStaleLocks();
-
+    const db = this.database;
     const now = Date.now();
-    const expiresAt = now + this.lockTtlMs;
-    const contextJson = JSON.stringify(context);
+    // Take-over of a stale lock and insertion happen atomically.
+    const acquired = db.transaction(() => {
+      db.prepare('DELETE FROM IndexLock WHERE expires_at <= ?').run(now);
+      const result = db
+        .prepare(
+          'INSERT OR IGNORE INTO IndexLock (id, owner, acquired_at, expires_at, context) VALUES (1, ?, ?, ?, ?)'
+        )
+        .run(owner, now, now + this.lockTtlMs, JSON.stringify(context));
+      return result.changes === 1;
+    })();
 
-    const existing = this.getLock();
-    if (existing) {
+    if (acquired) {
+      getLogger().info('index', 'LockManager', `Lock acquired by ${owner}`);
+    } else {
       getLogger().warn(
         'index',
         'LockManager',
-        `Cannot acquire lock for ${owner}: already held by ${existing.owner}`
+        `Cannot acquire lock for ${owner}: held by ${this.getLock()?.owner ?? 'unknown'}`
       );
-      return false;
     }
-
-    try {
-      this.database
-        .prepare(
-          'INSERT OR REPLACE INTO IndexLock (id, owner, acquired_at, expires_at, context) VALUES (1, ?, ?, ?, ?)'
-        )
-        .run(owner, now, expiresAt, contextJson);
-      getLogger().info(
-        'index',
-        'LockManager',
-        `Lock acquired by ${owner} until ${new Date(expiresAt).toISOString()}`
-      );
-      return true;
-    } catch (err) {
-      getLogger().error(
-        'index',
-        'LockManager',
-        `Failed to acquire lock for ${owner}: ${err instanceof Error ? err.message : String(err)}`
-      );
-      return false;
-    }
+    return acquired;
   }
 
   release(owner: string): boolean {
     const existing = this.getLock();
-    if (!existing) {
-      return true;
-    }
-
+    if (!existing) return true;
     if (existing.owner !== owner) {
       getLogger().warn(
         'index',
@@ -78,61 +74,45 @@ export class LockManager {
       );
       return false;
     }
-
-    this.database.prepare('DELETE FROM IndexLock WHERE id = 1').run();
+    this.database.prepare('DELETE FROM IndexLock WHERE id = 1 AND owner = ?').run(owner);
     getLogger().info('index', 'LockManager', `Lock released by ${owner}`);
     return true;
   }
 
   renew(owner: string): boolean {
-    const existing = this.getLock();
-    if (!existing || existing.owner !== owner) {
-      return false;
-    }
-
-    const expiresAt = Date.now() + this.lockTtlMs;
-    this.database
-      .prepare('UPDATE IndexLock SET expires_at = ? WHERE id = 1')
-      .run(expiresAt);
-    getLogger().debug('index', 'LockManager', `Lock renewed by ${owner}`);
-    return true;
+    const result = this.database
+      .prepare('UPDATE IndexLock SET expires_at = ? WHERE id = 1 AND owner = ?')
+      .run(Date.now() + this.lockTtlMs, owner);
+    return result.changes === 1;
   }
 
   getLock(): LockRecord | null {
-    try {
-      const row = this.database
-        .prepare('SELECT * FROM IndexLock WHERE id = 1')
-        .get() as LockRecord | undefined;
-      return row ?? null;
-    } catch {
-      return null;
-    }
+    const row = this.database.prepare('SELECT * FROM IndexLock WHERE id = 1').get() as
+      | LockRecord
+      | undefined;
+    return row ?? null;
   }
 
   isLocked(): boolean {
     const lock = this.getLock();
-    if (!lock) return false;
-    return lock.expires_at > Date.now();
+    return lock !== null && lock.expires_at > Date.now();
   }
 
   recoverStaleLocks(): number {
-    const now = Date.now();
-    const result = this.database
+    const count = this.database
       .prepare('DELETE FROM IndexLock WHERE expires_at <= ?')
-      .run(now);
-    const count = result.changes;
+      .run(Date.now()).changes;
     if (count > 0) {
-      getLogger().warn(
-        'index',
-        'LockManager',
-        `Recovered ${count} stale lock(s)`
-      );
+      getLogger().warn('index', 'LockManager', `Recovered ${count} stale lock(s)`);
     }
     return count;
   }
 
-  forceRelease(): void {
-    this.database.prepare('DELETE FROM IndexLock WHERE id = 1').run();
-    getLogger().warn('index', 'LockManager', 'Lock forcefully released');
+  forceRelease(): boolean {
+    const released = this.database.prepare('DELETE FROM IndexLock WHERE id = 1').run().changes > 0;
+    if (released) {
+      getLogger().warn('index', 'LockManager', 'Lock forcefully released');
+    }
+    return released;
   }
 }

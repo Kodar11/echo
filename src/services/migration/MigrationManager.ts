@@ -1,10 +1,27 @@
 import type Database from 'better-sqlite3';
+import { SCHEMA_VERSION } from '../../database/schema.js';
+import { getUserVersion } from '../../database/schemaValidation.js';
 
+export { getUserVersion };
+
+/**
+ * A forward-only schema migration.
+ *
+ * Migrations run in ascending version order. Each one runs inside a single
+ * transaction together with the `PRAGMA user_version` bump and the Migrations
+ * row, so a migration is either fully applied and recorded or not applied at
+ * all.
+ *
+ * To change the schema:
+ *   1. Update SCHEMA_SQL in src/database/schema.ts to the new final shape.
+ *   2. Bump SCHEMA_VERSION.
+ *   3. Append a migration here with `version === SCHEMA_VERSION` that
+ *      transforms the previous shape into the new one.
+ */
 export interface Migration {
   version: number;
   name: string;
   up: (database: Database.Database) => void;
-  down?: (database: Database.Database) => void;
 }
 
 export interface MigrationResult {
@@ -15,159 +32,108 @@ export interface MigrationResult {
   error?: string;
 }
 
-const BASELINE_MIGRATION: Migration = {
-  version: 1,
-  name: 'baseline_phase7',
-  up: (database) => {
-    // Ensure Migrations table exists (it should from SCHEMA_SQL, but older DBs may need it).
-    database.exec(`
-      CREATE TABLE IF NOT EXISTS Migrations (
-        version INTEGER PRIMARY KEY,
-        name TEXT NOT NULL,
-        applied_at INTEGER NOT NULL,
-        checksum TEXT
-      )
-    `);
+/**
+ * Oldest schema version that can be migrated forward. Databases older than
+ * this (including the pre-versioning layouts that had no `user_version`) are
+ * treated as incompatible and rebuilt from scratch — they only contain a
+ * derived search index.
+ */
+export const BASELINE_SCHEMA_VERSION = 3;
 
-    // Ensure IndexLock table exists.
-    database.exec(`
-      CREATE TABLE IF NOT EXISTS IndexLock (
-        id INTEGER PRIMARY KEY CHECK (id = 1),
-        owner TEXT NOT NULL,
-        acquired_at INTEGER NOT NULL,
-        expires_at INTEGER NOT NULL,
-        context TEXT
-      )
-    `);
+/** Migrations newer than the baseline. Empty until the schema changes. */
+export const MIGRATIONS: Migration[] = [];
 
-    // Phase 6 columns that may be missing in databases created before Phase 6.
-    ensureColumn(database, 'Files', 'language', 'TEXT');
-    ensureColumn(database, 'Files', 'content_hash', 'TEXT');
-    ensureColumn(database, 'Files', 'author', 'TEXT');
-    ensureColumn(database, 'Files', 'created_at', 'INTEGER');
-    ensureColumn(database, 'Files', 'extension', 'TEXT');
+export function runMigrations(
+  database: Database.Database,
+  migrations: Migration[] = MIGRATIONS,
+  targetVersion: number = SCHEMA_VERSION
+): MigrationResult {
+  const applied: number[] = [];
+  const startVersion = getUserVersion(database);
 
-    ensureColumn(database, 'IndexMetadata', 'ignored_files_count', 'INTEGER NOT NULL DEFAULT 0');
-
-    // Phase 7 version columns.
-    ensureColumn(database, 'IndexMetadata', 'schema_version', 'INTEGER NOT NULL DEFAULT 1');
-    ensureColumn(database, 'IndexMetadata', 'index_version', 'INTEGER NOT NULL DEFAULT 1');
-    ensureColumn(database, 'IndexMetadata', 'app_version', 'TEXT');
-    ensureColumn(database, 'IndexMetadata', 'created_at', 'INTEGER');
-    ensureColumn(database, 'IndexMetadata', 'last_migration_at', 'INTEGER');
-
-    // Ensure default IndexMetadata row exists.
-    database.exec(`
-      INSERT OR IGNORE INTO IndexMetadata (id, status) VALUES (1, 'never_indexed')
-    `);
-
-    // Create indexes added in Phase 6 if missing.
-    database.exec(`CREATE INDEX IF NOT EXISTS idx_files_language ON Files(language)`);
-    database.exec(`CREATE INDEX IF NOT EXISTS idx_files_content_hash ON Files(content_hash)`);
-    database.exec(`CREATE INDEX IF NOT EXISTS idx_files_author ON Files(author)`);
-    database.exec(`CREATE INDEX IF NOT EXISTS idx_files_created_at ON Files(created_at)`);
-    database.exec(`CREATE INDEX IF NOT EXISTS idx_files_extension ON Files(extension)`);
-
-    // Ensure IndexingRuns has a sensible default status.
-    database.exec(`
-      UPDATE IndexingRuns SET status = 'failed', error_message = 'Interrupted before Phase 7'
-      WHERE status IS NULL OR status = ''
-    `);
-
-    // Mark baseline version in metadata.
-    database.exec(`UPDATE IndexMetadata SET schema_version = 1, index_version = 1 WHERE id = 1`);
-  },
-};
-
-const MIGRATIONS: Migration[] = [BASELINE_MIGRATION];
-
-export class MigrationManager {
-  private database: Database.Database;
-
-  constructor(database: Database.Database) {
-    this.database = database;
-  }
-
-  getCurrentVersion(): number {
-    try {
-      const row = this.database
-        .prepare('SELECT MAX(version) as version FROM Migrations')
-        .get() as { version: number | null } | undefined;
-      return row?.version ?? 0;
-    } catch {
-      return 0;
-    }
-  }
-
-  getTargetVersion(): number {
-    return MIGRATIONS.reduce((max, m) => Math.max(max, m.version), 0);
-  }
-
-  migrate(): MigrationResult {
-    const currentVersion = this.getCurrentVersion();
-    const targetVersion = this.getTargetVersion();
-    const applied: number[] = [];
-
-    if (currentVersion === targetVersion) {
-      return { success: true, currentVersion, targetVersion, applied };
-    }
-
-    const pending = MIGRATIONS.filter((m) => m.version > currentVersion).sort(
-      (a, b) => a.version - b.version
-    );
-
-    for (const migration of pending) {
-      try {
-        this.applyMigration(migration);
-        applied.push(migration.version);
-      } catch (err) {
-        return {
-          success: false,
-          currentVersion: this.getCurrentVersion(),
-          targetVersion,
-          applied,
-          error: err instanceof Error ? err.message : String(err),
-        };
-      }
-    }
-
+  if (startVersion < BASELINE_SCHEMA_VERSION) {
     return {
-      success: true,
-      currentVersion: this.getCurrentVersion(),
+      success: false,
+      currentVersion: startVersion,
       targetVersion,
       applied,
+      error: `Schema version ${startVersion} is older than the supported baseline ${BASELINE_SCHEMA_VERSION}`,
     };
   }
 
-  private applyMigration(migration: Migration): void {
-    const migrate = this.database.transaction(() => {
-      migration.up(this.database);
-      this.database
-        .prepare(
-          'INSERT OR REPLACE INTO Migrations (version, name, applied_at, checksum) VALUES (?, ?, ?, ?)'
-        )
-        .run(migration.version, migration.name, Date.now(), null);
-    });
+  const pending = migrations
+    .filter((m) => m.version > startVersion && m.version <= targetVersion)
+    .sort((a, b) => a.version - b.version);
 
-    migrate();
+  for (const migration of pending) {
+    const current = getUserVersion(database);
+    if (migration.version !== current + 1) {
+      return {
+        success: false,
+        currentVersion: current,
+        targetVersion,
+        applied,
+        error: `Missing migration for version ${current + 1} (next available is ${migration.version})`,
+      };
+    }
 
-    this.database
-      .prepare('UPDATE IndexMetadata SET last_migration_at = ? WHERE id = 1')
-      .run(Date.now());
+    try {
+      database.transaction(() => {
+        migration.up(database);
+        database
+          .prepare(
+            'INSERT INTO Migrations (version, name, applied_at, checksum) VALUES (?, ?, ?, NULL)'
+          )
+          .run(migration.version, migration.name, Date.now());
+        database
+          .prepare('UPDATE IndexMetadata SET schema_version = ?, last_migration_at = ? WHERE id = 1')
+          .run(migration.version, Date.now());
+        database.pragma(`user_version = ${migration.version}`);
+      })();
+      applied.push(migration.version);
+    } catch (err) {
+      return {
+        success: false,
+        currentVersion: getUserVersion(database),
+        targetVersion,
+        applied,
+        error: `Migration ${migration.version} (${migration.name}) failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      };
+    }
   }
+
+  const currentVersion = getUserVersion(database);
+  if (currentVersion !== targetVersion) {
+    return {
+      success: false,
+      currentVersion,
+      targetVersion,
+      applied,
+      error: `Schema is at version ${currentVersion} after migrations, expected ${targetVersion}`,
+    };
+  }
+
+  return { success: true, currentVersion, targetVersion, applied };
 }
 
-function ensureColumn(
-  database: Database.Database,
-  table: string,
-  column: string,
-  type: string
-): void {
-  const columns = database
-    .prepare(`PRAGMA table_info(${table})`)
-    .all() as { name: string }[];
-  const exists = columns.some((c) => c.name === column);
-  if (!exists) {
-    database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+export class MigrationManager {
+  constructor(
+    private database: Database.Database,
+    private migrations: Migration[] = MIGRATIONS,
+    private targetVersion: number = SCHEMA_VERSION
+  ) {}
+
+  getCurrentVersion(): number {
+    return getUserVersion(this.database);
+  }
+
+  getTargetVersion(): number {
+    return this.targetVersion;
+  }
+
+  migrate(): MigrationResult {
+    return runMigrations(this.database, this.migrations, this.targetVersion);
   }
 }

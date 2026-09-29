@@ -8,14 +8,30 @@ type IndexStatus = 'never_indexed' | 'indexing' | 'indexed' | 'error';
 
 type HealthStatus = 'healthy' | 'warning' | 'error';
 
+/** Live phase of the indexing session (idle when none is running). */
+type IndexingPhase =
+  | 'idle'
+  | 'starting'
+  | 'crawling'
+  | 'syncing'
+  | 'indexing'
+  | 'cancelling'
+  | 'finalizing';
+
+/** Outcome of a finished indexing run. */
+type IndexingRunOutcome = 'completed' | 'completed_with_errors' | 'failed' | 'cancelled';
+
 type IndexState = {
   status: IndexStatus;
+  phase: IndexingPhase;
   currentFile: string | null;
   processed: number;
   total: number;
   indexedFiles: number;
   queueLength: number;
   error: string | null;
+  lastRunStatus: IndexingRunOutcome | null;
+  lastRunFailed: number;
 };
 
 type IndexStatistics = {
@@ -36,7 +52,12 @@ type HealthStats = {
   indexedFiles: number;
   failedFiles: number;
   ignoredFiles: number;
+  unsupportedFiles: number;
+  oversizedFiles: number;
+  inaccessibleFiles: number;
   pendingJobs: number;
+  indexingActive: boolean;
+  lastRunStatus: string | null;
   totalFolders: number;
   totalTerms: number;
   databaseSizeBytes: number;
@@ -48,13 +69,17 @@ type HealthStats = {
 };
 
 type IndexingProgress = {
-  status: 'idle' | 'running' | 'completed' | 'error';
+  status: 'idle' | 'running';
+  phase: IndexingPhase;
+  trigger: string | null;
   currentFile?: string;
   processed: number;
   total: number;
   indexedFiles: number;
+  failedTasks?: number;
   pendingTasks?: number;
   error?: string;
+  lastOutcome: IndexingRunOutcome | null;
 };
 
 type SearchResult = {
@@ -73,12 +98,22 @@ type SearchResult = {
 type SearchOptions = {
   query: string;
   folderIds?: number[];
+  requestId?: number;
+};
+
+type QueryError = {
+  kind: 'syntax' | 'filter';
+  message: string;
+  position?: number;
 };
 
 type SearchResponse = {
   results: SearchResult[];
   totalCount: number;
   durationMs: number;
+  requestId?: number;
+  error?: QueryError;
+  cancelled?: boolean;
 };
 
 type DuplicateGroup = {
@@ -108,11 +143,21 @@ type RecoveryResult = {
   recovered: boolean;
   interruptedRuns: number;
   partialFiles: number;
+  staleLockReleased: boolean;
   message: string;
 };
 
 type IntegrityIssue = {
-  type: 'orphan_term' | 'orphan_posting' | 'missing_file' | 'duplicate_metadata' | 'invalid_metadata';
+  type:
+    | 'schema_mismatch'
+    | 'missing_metadata'
+    | 'duplicate_metadata'
+    | 'foreign_key_violation'
+    | 'orphan_posting'
+    | 'orphan_term'
+    | 'document_frequency_mismatch'
+    | 'partial_file'
+    | 'invalid_metadata';
   description: string;
   details?: string;
 };
@@ -121,6 +166,7 @@ type IntegrityReport = {
   healthy: boolean;
   issues: IntegrityIssue[];
   repaired: boolean;
+  summary?: Record<string, number>;
 };
 
 type MaintenanceOperation = {
@@ -151,6 +197,12 @@ type ScheduleInterval = 'hourly' | 'daily';
 
 type FrameWindowAction = 'CLOSE' | 'MAXIMIZE' | 'MINIMIZE';
 
+type WindowState = {
+  isMaximized: boolean;
+  isMinimized: boolean;
+  isFullScreen: boolean;
+};
+
 type AppSettings = {
   autoSyncOnStartup: boolean;
   enableWatchers: boolean;
@@ -172,6 +224,8 @@ type AppSettings = {
   migrationBehavior: 'auto' | 'prompt' | 'block';
   recoveryBehavior: 'auto' | 'notify' | 'manual';
   enableIntegrityCheckOnStartup: boolean;
+  themePreference: 'system' | 'light' | 'dark';
+  sidebarCollapsed: boolean;
 };
 
 type EventPayloadInputMapping = {
@@ -186,6 +240,7 @@ type EventPayloadInputMapping = {
   getIndexStatus: void;
   getIndexStatistics: void;
   deleteIndex: void;
+  resetDatabase: void;
   search: SearchOptions;
   getAutocompleteSuggestions: { prefix: string };
   openFile: { path: string };
@@ -213,6 +268,8 @@ type EventPayloadInputMapping = {
   repairIndex: void;
   runMaintenance: { vacuum?: boolean; analyze?: boolean };
   sendFrameAction: FrameWindowAction;
+  getWindowState: void;
+  subscribeWindowState: void;
 };
 
 type EventPayloadOutputMapping = {
@@ -227,6 +284,7 @@ type EventPayloadOutputMapping = {
   getIndexStatus: IndexState;
   getIndexStatistics: IndexStatistics;
   deleteIndex: void;
+  resetDatabase: void;
   search: SearchResponse;
   getAutocompleteSuggestions: string[];
   openFile: void;
@@ -254,6 +312,8 @@ type EventPayloadOutputMapping = {
   repairIndex: IntegrityReport;
   runMaintenance: MaintenanceResult;
   sendFrameAction: void;
+  getWindowState: WindowState;
+  subscribeWindowState: WindowState;
 };
 
 type UnsubscribeFunction = () => void;
@@ -276,6 +336,7 @@ interface Window {
     getIndexStatus: () => Promise<IndexState>;
     getIndexStatistics: () => Promise<IndexStatistics>;
     deleteIndex: () => Promise<void>;
+    resetDatabase: () => Promise<void>;
     search: (input: SearchOptions) => Promise<SearchResponse>;
     getAutocompleteSuggestions: (input: {
       prefix: string;
@@ -322,5 +383,9 @@ interface Window {
       analyze?: boolean;
     }) => Promise<MaintenanceResult>;
     sendFrameAction: (payload: FrameWindowAction) => void;
+    getWindowState: () => Promise<WindowState>;
+    subscribeWindowState: (
+      callback: (state: WindowState) => void
+    ) => UnsubscribeFunction;
   };
 }

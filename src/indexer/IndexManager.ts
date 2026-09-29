@@ -1,58 +1,61 @@
 import fs from 'fs';
 import path from 'path';
 import { app } from 'electron';
-import { getDatabase, getDatabasePath } from '../database/connection.js';
 import {
-  deleteAllFiles,
-  getFileCount,
-  getFilePathsByPrefix,
-} from '../database/files.js';
-import { getFolders } from '../database/folders.js';
+  getDatabase,
+  getDatabasePath,
+  getLastOpenReport,
+  resetDatabase as resetDatabaseFile,
+} from '../database/connection.js';
+import { getFileCount, getFilePathsUnder } from '../database/files.js';
 import {
-  getIndexMetadata,
-  recordIndexingCompleted,
-  resetIndexMetadata,
-  setIndexingStatus,
-} from '../database/indexMetadata.js';
-import {
-  completeIndexingRun,
-  failIndexingRun,
-  startIndexingRun,
-} from '../database/indexingRuns.js';
-import { deleteAllPostings } from '../database/postings.js';
+  addFolder as addFolderRecord,
+  getEnabledFolders,
+  getFolderById,
+  getFolders,
+  getUnsyncedEnabledFolders,
+  removeFolder as removeFolderRecord,
+  setFolderEnabled as setFolderEnabledRecord,
+  type FolderRecord,
+} from '../database/folders.js';
+import { clearIndexData } from '../database/indexWriter.js';
+import { getIndexMetadata, resetIndexMetadata, type IndexStatus } from '../database/indexMetadata.js';
+import { clearIndexingFailure } from '../database/indexingFailures.js';
 import {
   getBooleanSetting,
   getSetting,
   setBooleanSetting,
   setSetting,
 } from '../database/settings.js';
-import { deleteAllTerms, getTermCount } from '../database/terms.js';
+import { getTermCount } from '../database/terms.js';
 import { SETTING_KEYS } from '../settings/keys.js';
 import { searchEngine } from '../search/engine.js';
 import { backupManager } from '../services/backup/BackupManager.js';
 import { extractorManager, type ExtractorId } from '../services/extractors/ExtractorManager.js';
 import { healthManager, type HealthStats } from '../services/health/HealthManager.js';
-import { ignoreRuleManager, type IgnoreRuleRecord, type IgnoreRuleType } from '../services/ignore/IgnoreRuleManager.js';
-import { createLogger, getLogger, type LogCategory } from '../services/logger/logger.js';
+import {
+  ignoreRuleManager,
+  type IgnoreRuleRecord,
+  type IgnoreRuleType,
+} from '../services/ignore/IgnoreRuleManager.js';
+import { createLogger, getLogger } from '../services/logger/logger.js';
 import { ScheduleManager, type IndexingMode, type ScheduleInterval } from '../services/scheduler/ScheduleManager.js';
-import { LockManager } from '../services/lock/LockManager.js';
-import { RecoveryManager } from '../services/recovery/RecoveryManager.js';
+import { RecoveryManager, type RecoveryResultRecord } from '../services/recovery/RecoveryManager.js';
 import { IntegrityManager } from '../services/integrity/IntegrityManager.js';
 import { MaintenanceManager } from '../services/maintenance/MaintenanceManager.js';
-import { MigrationManager } from '../services/migration/MigrationManager.js';
+import { errorMessage } from './errors.js';
+import { isIndexConfigStale } from './indexingSettings.js';
 import {
-  IndexQueue,
-  type IndexQueueProgress,
-  type ProgressCallback,
-} from './IndexQueue.js';
-import { SyncManager } from './SyncManager.js';
+  IndexingCoordinator,
+  type IndexingPhase,
+  type IndexingState,
+  type SessionResult,
+  type SessionTrigger,
+} from './IndexingCoordinator.js';
+import { normalizeFsPath } from './paths.js';
 import { WatcherManager } from './WatcherManager.js';
 
-export type IndexStatus =
-  | 'never_indexed'
-  | 'indexing'
-  | 'indexed'
-  | 'error';
+export type { IndexStatus };
 
 export interface IndexStatistics {
   status: IndexStatus;
@@ -66,114 +69,122 @@ export interface IndexStatistics {
   totalIndexingRuns: number;
 }
 
-export interface IndexState {
+export interface IndexStateRecord {
   status: IndexStatus;
+  phase: IndexingPhase;
   currentFile: string | null;
   processed: number;
   total: number;
   indexedFiles: number;
   queueLength: number;
   error: string | null;
+  lastRunStatus: SessionResult['outcome'] | null;
+  lastRunFailed: number;
 }
 
+export interface IndexingProgressRecord {
+  status: 'idle' | 'running';
+  phase: IndexingPhase;
+  trigger: SessionTrigger | null;
+  currentFile?: string;
+  processed: number;
+  total: number;
+  indexedFiles: number;
+  failedTasks: number;
+  pendingTasks: number;
+  error?: string;
+  lastOutcome: SessionResult['outcome'] | null;
+}
+
+const STARTUP_SYNC_DELAY_MS = 1000;
+
 export class IndexManager {
-  private queue: IndexQueue;
-  private syncManager: SyncManager;
-  private watcherManager: WatcherManager;
-  private scheduleManager: ScheduleManager;
-  private lockManager: LockManager;
-  private recoveryManager: RecoveryManager;
-  private integrityManager: IntegrityManager;
-  private maintenanceManager: MaintenanceManager;
-  private migrationManager: MigrationManager;
-  private currentRunId: number | null = null;
-  private runStartTime = 0;
-  private manualRunInProgress = false;
-  private engineNeedsRebuild = false;
-  private lastRebuildTime = 0;
-  private watchersStarted = false;
-  private unsubscribeQueue?: () => void;
+  private readonly coordinator: IndexingCoordinator;
+  private readonly watcherManager: WatcherManager;
+  private readonly scheduleManager: ScheduleManager;
+  private readonly recoveryManager = new RecoveryManager();
+  private readonly integrityManager = new IntegrityManager();
+  private readonly maintenanceManager = new MaintenanceManager();
+  private recoveryResult: RecoveryResultRecord | null = null;
   private loggerInitialized = false;
-  private recoveryResult: RecoveryResult | null = null;
-  private lockOwner: string | null = null;
+  private initialized = false;
+  private disposed = false;
+  private startupTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
-    const database = getDatabase();
-    this.queue = new IndexQueue({
-      onIdle: () => this.handleQueueIdle(),
-    });
-    this.syncManager = new SyncManager(this.queue);
-    this.watcherManager = new WatcherManager(this.queue, {
-      onBulkChange: () => this.requestIndexingSession('watcher'),
+    // No database access here: the module is imported before the app is ready.
+    this.coordinator = new IndexingCoordinator();
+    this.watcherManager = new WatcherManager({
+      onTasks: (tasks) => {
+        this.coordinator.requestIncremental(tasks, 'watcher')?.catch((err) => this.logSessionError(err));
+      },
+      onDirectoryRemoved: (dirPath) => {
+        const tasks = getFilePathsUnder(dirPath).map((filePath) => ({
+          type: 'delete' as const,
+          path: filePath,
+        }));
+        this.coordinator.requestIncremental(tasks, 'watcher')?.catch((err) => this.logSessionError(err));
+      },
     });
     this.scheduleManager = new ScheduleManager({
-      onStartupSync: () =>
-        this.requestIndexingSession('scheduled').then(() => undefined),
+      onStartupSync: () => this.requestSync('scheduled').then(() => undefined),
     });
-    this.lockManager = new LockManager(database);
-    this.recoveryManager = new RecoveryManager(database);
-    this.integrityManager = new IntegrityManager(database);
-    this.maintenanceManager = new MaintenanceManager(database);
-    this.migrationManager = new MigrationManager(database);
   }
 
   initialize(): void {
+    if (this.initialized) return;
+    this.initialized = true;
     this.initializeLogger();
-    this.ensureMetadata();
+
+    // Opening the database validates the schema; an incompatible database is
+    // rebuilt from scratch (see database/connection.ts).
+    getDatabase();
+    const openReport = getLastOpenReport();
+    if (openReport && openReport.action !== 'opened') {
+      getLogger().warn(
+        'index',
+        'IndexManager',
+        `Database ${openReport.action} (schema v${openReport.schemaVersion})${openReport.reason ? `: ${openReport.reason}` : ''}`
+      );
+    }
+
     extractorManager.initialize();
     ignoreRuleManager.initialize();
 
-    // Run migrations before any indexing or recovery.
-    const migrationResult = this.migrationManager.migrate();
-    if (!migrationResult.success) {
-      getLogger().error(
-        'index',
-        'IndexManager',
-        `Database migration failed: ${migrationResult.error}`
-      );
-      setIndexingStatus('error', migrationResult.error ?? 'Migration failed');
-    }
+    this.recoveryResult = this.recoveryManager.checkAndRecover(this.getAutoRecovery());
 
-    // Run crash recovery before any indexing starts.
-    const autoRecovery = this.getAutoRecovery();
-    this.recoveryResult = this.recoveryManager.checkAndRecover(autoRecovery);
-    if (this.recoveryResult.recovered) {
-      this.engineNeedsRebuild = true;
-    }
-
-    // Optional startup integrity check.
     if (this.getEnableIntegrityCheckOnStartup()) {
-      const integrityReport = this.integrityManager.verify();
-      if (!integrityReport.healthy) {
+      const report = this.integrityManager.verify();
+      if (!report.healthy) {
         getLogger().warn(
           'index',
           'IndexManager',
-          `Startup integrity check found ${integrityReport.issues.length} issue(s)`
+          `Startup integrity check found issues: ${JSON.stringify(report.summary)}`
         );
       }
     }
 
-    this.loadIndex();
+    searchEngine.rebuildIndex();
+    this.syncWatchers();
 
-    this.unsubscribeQueue = this.queue.subscribe((progress) => {
-      this.handleQueueProgress(progress);
-    });
-
-    if (this.scheduleManager.shouldRunStartupSync() && this.shouldRunStartupSync()) {
-      this.runStartupSync();
-    }
-
-    if (this.scheduleManager.shouldEnableWatchers()) {
-      this.startWatchers();
+    if (this.shouldRunStartupSync()) {
+      this.startupTimer = setTimeout(() => {
+        this.startupTimer = null;
+        void this.requestSync('startup');
+      }, STARTUP_SYNC_DELAY_MS);
     }
 
     this.scheduleManager.start();
   }
 
-  dispose(): void {
-    this.unsubscribeQueue?.();
-    this.watcherManager.stop();
+  /** Cancels any running session and waits for it to be finalized. */
+  async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposed = true;
+    if (this.startupTimer) clearTimeout(this.startupTimer);
     this.scheduleManager.stop();
+    this.watcherManager.stop(false);
+    await this.coordinator.dispose();
     getLogger().close();
   }
 
@@ -183,10 +194,10 @@ export class IndexManager {
     createLogger({
       logDir,
       enabledCategories: {
-        index: this.getEnableIndexLogging(),
-        watcher: this.getEnableWatcherLogging(),
-        errors: this.getEnableErrorLogging(),
-        debug: this.getEnableDebugLogging(),
+        index: getBooleanSetting(SETTING_KEYS.enableIndexLogging, true),
+        watcher: getBooleanSetting(SETTING_KEYS.enableWatcherLogging, true),
+        errors: getBooleanSetting(SETTING_KEYS.enableErrorLogging, true),
+        debug: getBooleanSetting(SETTING_KEYS.enableDebugLogging, false),
       },
     });
     this.loggerInitialized = true;
@@ -201,200 +212,184 @@ export class IndexManager {
     });
   }
 
-  ensureMetadata(): void {
-    getIndexMetadata();
-  }
-
-  loadIndex(): void {
-    const metadata = getIndexMetadata();
-    const fileCount = getFileCount();
-
-    searchEngine.rebuildIndex();
-    this.lastRebuildTime = Date.now();
-
-    if (fileCount === 0) {
-      if (metadata.status !== 'indexing' && metadata.status !== 'error') {
-        setIndexingStatus('never_indexed');
-      }
-      return;
-    }
-
-    if (metadata.status !== 'indexing' && metadata.status !== 'error') {
-      setIndexingStatus('indexed');
-    }
-  }
-
-  async startIndexing(): Promise<void> {
-    if (this.manualRunInProgress) return;
-
-    await this.requestIndexingSession('manual');
-  }
+  // ---------------------------------------------------------------------
+  // Sessions
 
   /**
-   * Requests an indexing session, serializing all sync triggers behind a single
-   * persistent lock. Returns true if the session was started, false if queued.
+   * Startup sync runs when the configured mode asks for it, or regardless of
+   * mode when the disk state of an enabled folder was never reconciled, the
+   * previous session was interrupted, or the indexing configuration changed.
+   * A synchronized folder produces a zero-work sync, not a re-index.
    */
-  private async requestIndexingSession(trigger: string): Promise<boolean> {
-    const owner = `index:${trigger}:${Date.now()}`;
-
-    if (!this.lockManager.acquire(owner, { trigger })) {
-      getLogger().info(
-        'index',
-        'IndexManager',
-        `Indexing session for "${trigger}" queued behind active lock`
-      );
-      return false;
-    }
-
-    this.lockOwner = owner;
-    this.stopWatchers();
-    this.runStartTime = Date.now();
-
-    if (!this.currentRunId) {
-      this.currentRunId = startIndexingRun();
-    }
-
-    if (trigger === 'manual') {
-      this.manualRunInProgress = true;
-    }
-
-    setIndexingStatus('indexing');
-
-    try {
-      await this.syncManager.sync({ trigger: trigger as 'manual' | 'startup' | 'scheduled' });
-      return true;
-    } catch (err) {
-      getLogger().error(
-        'index',
-        'IndexManager',
-        `Sync failed for "${trigger}": ${err instanceof Error ? err.message : String(err)}`
-      );
-      this.releaseIndexingLock();
-      throw err;
-    }
+  private shouldRunStartupSync(): boolean {
+    if (getEnabledFolders().length === 0) return false;
+    return (
+      this.scheduleManager.shouldRunStartupSync() ||
+      getUnsyncedEnabledFolders().length > 0 ||
+      Boolean(this.recoveryResult?.recovered) ||
+      isIndexConfigStale()
+    );
   }
 
-  private releaseIndexingLock(): void {
-    if (this.lockOwner) {
-      this.lockManager.release(this.lockOwner);
-      this.lockOwner = null;
-    }
+  private requestSync(
+    trigger: SessionTrigger,
+    options: { afterCurrent?: boolean; force?: boolean } = {}
+  ): Promise<SessionResult | null> {
+    if (this.disposed) return Promise.resolve(null);
+    return this.coordinator.requestFullSync(trigger, options).catch((err) => {
+      this.logSessionError(err);
+      return null;
+    });
   }
 
-  stopIndexing(): void {
-    this.queue.clear();
-    this.watcherManager.stop();
-
-    if (this.manualRunInProgress && this.currentRunId !== null) {
-      const duration = Date.now() - this.runStartTime;
-      failIndexingRun(this.currentRunId, duration, 'Cancelled by user');
-    }
-
-    this.manualRunInProgress = false;
-    this.currentRunId = null;
-    this.engineNeedsRebuild = true;
-    this.releaseIndexingLock();
-
-    setIndexingStatus('indexed');
-    this.rebuildSearchEngineIfNeeded(true);
-
-    if (this.scheduleManager.shouldEnableWatchers()) {
-      this.startWatchers();
-    }
+  private logSessionError(err: unknown): void {
+    getLogger().error('index', 'IndexManager', `Indexing session error: ${errorMessage(err)}`);
   }
 
-  deleteIndex(): void {
-    this.stopWatchers();
-    this.queue.clear();
-    this.manualRunInProgress = false;
-    this.currentRunId = null;
-    this.engineNeedsRebuild = false;
-    this.releaseIndexingLock();
+  /** Starts (or joins) a full sync. Resolves when it has been finalized. */
+  startIndexing(trigger: SessionTrigger = 'manual'): Promise<SessionResult | null> {
+    return this.requestSync(trigger);
+  }
 
-    deleteAllPostings();
-    deleteAllFiles();
-    deleteAllTerms();
+  /** Cancels the running session; resolves once cleanup has completed. */
+  async stopIndexing(): Promise<SessionResult | null> {
+    return this.coordinator.cancel();
+  }
+
+  /** Re-attempts one failed file. */
+  retryFailure(filePath: string): void {
+    clearIndexingFailure(filePath);
+    this.coordinator
+      .requestIncremental([{ type: 'index', path: filePath }], 'retry')
+      ?.catch((err) => this.logSessionError(err));
+  }
+
+  /** Deletes all indexed content but keeps folders and settings. */
+  async deleteIndex(): Promise<void> {
+    await this.coordinator.cancel();
+    clearIndexData();
     resetIndexMetadata();
     searchEngine.rebuildIndex();
   }
 
-  getStatus(): IndexState {
-    const metadata = getIndexMetadata();
-    const progress = this.queue.getProgress();
+  /**
+   * Deliberate full reset: discards the database file (index, folders,
+   * settings, rules) and recreates an empty database from the schema.
+   */
+  async resetDatabase(): Promise<void> {
+    if (this.startupTimer) {
+      clearTimeout(this.startupTimer);
+      this.startupTimer = null;
+    }
+    this.watcherManager.stop(false);
+    await this.coordinator.cancel();
+    resetDatabaseFile();
+    extractorManager.initialize();
+    ignoreRuleManager.initialize();
+    searchEngine.rebuildIndex();
+    this.syncWatchers();
+    getLogger().warn('index', 'IndexManager', 'Database was reset to an empty state');
+  }
 
+  getStatus(): IndexStateRecord {
+    const metadata = getIndexMetadata();
+    const state = this.coordinator.getState();
+    const last = state.lastResult;
     return {
-      status: metadata.status,
-      currentFile: progress.currentFile ?? null,
-      processed: progress.processed,
-      total: progress.total,
+      status: state.active ? 'indexing' : metadata.status,
+      phase: state.phase,
+      currentFile: state.queue.currentFile ?? null,
+      processed: state.queue.processed,
+      total: state.queue.total,
       indexedFiles: getFileCount(),
-      queueLength: progress.pendingTasks,
+      queueLength: state.queue.pendingTasks,
       error: metadata.error_message ?? null,
+      lastRunStatus: last?.outcome ?? metadata.last_run_status ?? null,
+      lastRunFailed: last?.counts.failed ?? 0,
     };
   }
 
-  subscribeToProgress(callback: ProgressCallback): () => void {
-    return this.queue.subscribe(callback);
+  getProgress(): IndexingProgressRecord {
+    return toProgress(this.coordinator.getState());
   }
 
-  getQueueProgress(): IndexQueueProgress {
-    return this.queue.getProgress();
+  subscribeToProgress(callback: (progress: IndexingProgressRecord) => void): () => void {
+    return this.coordinator.subscribe((state) => callback(toProgress(state)));
   }
 
   getStatistics(): IndexStatistics {
     const metadata = getIndexMetadata();
-    const dbPath = getDatabasePath();
-    let dbSize = 0;
-    try {
-      dbSize = fs.statSync(dbPath).size;
-    } catch {
-      dbSize = 0;
-    }
-
     return {
-      status: metadata.status,
+      status: this.coordinator.isActive() ? 'indexing' : metadata.status,
       totalIndexedFiles: getFileCount(),
       totalIndexedFolders: getFolders().length,
       totalUniqueTerms: getTermCount(),
       lastIndexedAt: metadata.last_indexed_at,
       lastIndexDurationMs: metadata.last_index_duration_ms,
       averageIndexDurationMs: metadata.average_index_duration_ms,
-      databaseSizeBytes: dbSize,
+      databaseSizeBytes: databaseSize(),
       totalIndexingRuns: metadata.total_indexing_runs,
     };
   }
 
   getHealthStats(): HealthStats {
-    return healthManager.getHealthStats(this.queue.getProgress().pendingTasks);
+    const state = this.coordinator.getState();
+    return healthManager.getHealthStats(state.queue.pendingTasks, state.active);
   }
 
-  removeFolderFiles(folderPath: string): void {
-    const prefix = folderPath.endsWith(path.sep)
-      ? folderPath
-      : `${folderPath}${path.sep}`;
-    const files = getFilePathsByPrefix(prefix);
-    if (files.length === 0) return;
+  // ---------------------------------------------------------------------
+  // Folders
 
-    this.queue.enqueueMany(files.map((filePath) => ({
-      type: 'delete' as const,
-      path: filePath,
-    })));
+  addFolder(folderPath: string): FolderRecord {
+    const folder = addFolderRecord(normalizeFsPath(folderPath));
+    this.onFoldersChanged();
+    return folder;
+  }
+
+  removeFolder(id: number): void {
+    removeFolderRecord(id);
+    // The sync deletes indexed files that are no longer under an enabled folder.
+    this.onFoldersChanged();
+  }
+
+  setFolderEnabled(id: number, enabled: boolean): FolderRecord | undefined {
+    const folder = setFolderEnabledRecord(id, enabled);
+    if (folder) this.onFoldersChanged();
+    return folder;
+  }
+
+  getFolder(id: number): FolderRecord | undefined {
+    return getFolderById(id);
+  }
+
+  private onFoldersChanged(): void {
+    this.syncWatchers();
+    void this.requestSync('folders', { afterCurrent: true });
+  }
+
+  /** Makes the watcher state match the indexing mode and enabled folders. */
+  private syncWatchers(): void {
+    const folders = getEnabledFolders();
+    if (!this.disposed && this.scheduleManager.shouldEnableWatchers() && folders.length > 0) {
+      this.watcherManager.start(folders);
+    } else {
+      this.watcherManager.stop();
+    }
   }
 
   restartWatchers(): void {
-    if (this.scheduleManager.shouldEnableWatchers()) {
-      this.startWatchers();
-    }
+    this.syncWatchers();
   }
+
+  // ---------------------------------------------------------------------
+  // Settings
 
   getAutoSyncOnStartup(): boolean {
     return this.scheduleManager.shouldRunStartupSync();
   }
 
   setAutoSyncOnStartup(enabled: boolean): void {
-    // Kept for backwards compatibility; maps to immediate/startup modes.
-    const mode = enabled ? 'immediate' : 'manual';
-    this.scheduleManager.setIndexingMode(mode as IndexingMode);
+    this.scheduleManager.setIndexingMode(enabled ? 'immediate' : 'manual');
     this.applyScheduleMode();
   }
 
@@ -403,8 +398,7 @@ export class IndexManager {
   }
 
   setEnableWatchers(enabled: boolean): void {
-    const mode = enabled ? 'immediate' : 'manual';
-    this.scheduleManager.setIndexingMode(mode as IndexingMode);
+    this.scheduleManager.setIndexingMode(enabled ? 'immediate' : 'manual');
     this.applyScheduleMode();
   }
 
@@ -415,9 +409,7 @@ export class IndexManager {
   setIndexingMode(mode: IndexingMode): void {
     const changed = this.scheduleManager.getIndexingMode() !== mode;
     this.scheduleManager.setIndexingMode(mode);
-    if (changed) {
-      this.applyScheduleMode();
-    }
+    if (changed) this.applyScheduleMode();
   }
 
   getScheduleInterval(): ScheduleInterval {
@@ -429,15 +421,25 @@ export class IndexManager {
     this.applyScheduleMode();
   }
 
+  private applyScheduleMode(): void {
+    this.scheduleManager.stop();
+    this.syncWatchers();
+    if (this.scheduleManager.getIndexingMode() === 'scheduled') {
+      this.scheduleManager.start();
+    }
+  }
+
   getMaxFileSizeBytes(): number {
     const raw = getSetting(SETTING_KEYS.maxFileSizeBytes);
-    if (!raw) return 0;
-    const value = parseInt(raw, 10);
-    return isNaN(value) ? 0 : value;
+    const value = raw ? parseInt(raw, 10) : 0;
+    return Number.isFinite(value) && value > 0 ? value : 0;
   }
 
   setMaxFileSizeBytes(bytes: number): void {
-    setSetting(SETTING_KEYS.maxFileSizeBytes, String(bytes));
+    const next = Number.isFinite(bytes) && bytes > 0 ? Math.floor(bytes) : 0;
+    const changed = next !== this.getMaxFileSizeBytes();
+    setSetting(SETTING_KEYS.maxFileSizeBytes, String(next));
+    if (changed) this.onIndexingConfigChanged();
   }
 
   getEnabledExtractors(): ExtractorId[] {
@@ -446,12 +448,9 @@ export class IndexManager {
 
   setEnabledExtractors(ids: ExtractorId[]): void {
     const changed =
-      JSON.stringify(extractorManager.getEnabled().sort()) !==
-      JSON.stringify(ids.sort());
+      JSON.stringify([...extractorManager.getEnabled()].sort()) !== JSON.stringify([...ids].sort());
     extractorManager.setEnabled(ids);
-    if (changed) {
-      this.triggerReindex();
-    }
+    if (changed) this.onIndexingConfigChanged();
   }
 
   getRemoveStopWords(): boolean {
@@ -461,9 +460,7 @@ export class IndexManager {
   setRemoveStopWords(enabled: boolean): void {
     const changed = this.getRemoveStopWords() !== enabled;
     setBooleanSetting(SETTING_KEYS.removeStopWords, enabled);
-    if (changed) {
-      this.triggerReindex();
-    }
+    if (changed) this.onIndexingConfigChanged();
   }
 
   getEnableStemming(): boolean {
@@ -473,9 +470,8 @@ export class IndexManager {
   setEnableStemming(enabled: boolean): void {
     const changed = this.getEnableStemming() !== enabled;
     setBooleanSetting(SETTING_KEYS.enableStemming, enabled);
-    if (changed) {
-      this.triggerReindex();
-    }
+    // Stemming is applied at query time; only the search tables change.
+    if (changed) searchEngine.rebuildIndex();
   }
 
   getEnableLanguageDetection(): boolean {
@@ -485,9 +481,7 @@ export class IndexManager {
   setEnableLanguageDetection(enabled: boolean): void {
     const changed = this.getEnableLanguageDetection() !== enabled;
     setBooleanSetting(SETTING_KEYS.enableLanguageDetection, enabled);
-    if (changed) {
-      this.triggerReindex();
-    }
+    if (changed) this.onIndexingConfigChanged();
   }
 
   getIndexMetadata(): boolean {
@@ -497,9 +491,17 @@ export class IndexManager {
   setIndexMetadata(enabled: boolean): void {
     const changed = this.getIndexMetadata() !== enabled;
     setBooleanSetting(SETTING_KEYS.indexMetadata, enabled);
-    if (changed) {
-      this.triggerReindex();
-    }
+    if (changed) this.onIndexingConfigChanged();
+  }
+
+  /**
+   * Settings that change what is indexed trigger a sync after the current one.
+   * Content-affecting settings change the index fingerprint, which makes that
+   * sync re-index every file (see indexingSettings.ts).
+   */
+  private onIndexingConfigChanged(): void {
+    if (getEnabledFolders().length === 0) return;
+    void this.requestSync('settings', { afterCurrent: true });
   }
 
   getEnableIndexLogging(): boolean {
@@ -542,22 +544,30 @@ export class IndexManager {
     return getLogger().getLogDir();
   }
 
-  // Ignore rules
+  // Ignore rules — every change re-evaluates which files belong in the index.
   getIgnoreRules(): IgnoreRuleRecord[] {
     return ignoreRuleManager.getRules();
   }
 
   addIgnoreRule(pattern: string, type: IgnoreRuleType = 'glob'): IgnoreRuleRecord {
     const rule = ignoreRuleManager.addRule(pattern, type);
+    this.onIgnoreRulesChanged();
     return rule;
   }
 
   setIgnoreRuleEnabled(id: number, enabled: boolean): void {
     ignoreRuleManager.setEnabled(id, enabled);
+    this.onIgnoreRulesChanged();
   }
 
   deleteIgnoreRule(id: number): void {
     ignoreRuleManager.deleteRule(id);
+    this.onIgnoreRulesChanged();
+  }
+
+  private onIgnoreRulesChanged(): void {
+    this.syncWatchers();
+    this.onIndexingConfigChanged();
   }
 
   // Backup
@@ -566,7 +576,17 @@ export class IndexManager {
   }
 
   async importBackup(sourcePath: string): Promise<void> {
-    await backupManager.importBackup(sourcePath);
+    this.watcherManager.stop(false);
+    await this.coordinator.cancel();
+    try {
+      await backupManager.importBackup(sourcePath);
+    } finally {
+      extractorManager.initialize();
+      ignoreRuleManager.initialize();
+      this.recoveryResult = this.recoveryManager.checkAndRecover(this.getAutoRecovery());
+      searchEngine.rebuildIndex();
+      this.syncWatchers();
+    }
   }
 
   async validateBackup(sourcePath: string): Promise<{ valid: boolean; error?: string }> {
@@ -574,7 +594,7 @@ export class IndexManager {
   }
 
   // Reliability
-  getRecoveryResult(): RecoveryResult | null {
+  getRecoveryResult(): RecoveryResultRecord | null {
     return this.recoveryResult;
   }
 
@@ -586,8 +606,12 @@ export class IndexManager {
     return this.integrityManager.verify();
   }
 
-  repairIndex(): IntegrityReport {
-    return this.integrityManager.verifyAndRepair();
+  async repairIndex(): Promise<IntegrityReport> {
+    // Repairs must not race with index writes.
+    await this.coordinator.cancel();
+    const report = this.integrityManager.verifyAndRepair();
+    searchEngine.rebuildIndex();
+    return report;
   }
 
   runMaintenance(options?: { vacuum?: boolean; analyze?: boolean }): MaintenanceResult {
@@ -646,134 +670,52 @@ export class IndexManager {
     setBooleanSetting(SETTING_KEYS.enableIntegrityCheckOnStartup, enabled);
   }
 
-  private applyScheduleMode(): void {
-    this.scheduleManager.stop();
-    if (this.manualRunInProgress) return;
-
-    if (this.scheduleManager.shouldEnableWatchers()) {
-      this.startWatchers();
-    } else {
-      this.stopWatchers();
-    }
-
-    if (this.scheduleManager.getIndexingMode() === 'scheduled') {
-      this.scheduleManager.start();
-    }
+  getThemePreference(): 'system' | 'light' | 'dark' {
+    const raw = getSetting(SETTING_KEYS.themePreference, 'system');
+    if (raw === 'light' || raw === 'dark') return raw;
+    return 'system';
   }
 
-  private triggerReindex(): void {
-    setTimeout(() => {
-      this.startIndexing().catch((err) => {
-        getLogger().error(
-          'index',
-          'IndexManager',
-          `Auto-reindex failed: ${err instanceof Error ? err.message : String(err)}`
-        );
-      });
-    }, 100);
+  setThemePreference(value: 'system' | 'light' | 'dark'): void {
+    setSetting(SETTING_KEYS.themePreference, value);
   }
 
-  private shouldRunStartupSync(): boolean {
-    const metadata = getIndexMetadata();
-    if (metadata.status === 'indexing') return false;
-    if (getFolders().length === 0) return false;
-    if (getFileCount() === 0) return false;
-    return true;
+  getSidebarCollapsed(): boolean {
+    return getBooleanSetting(SETTING_KEYS.sidebarCollapsed, false);
   }
 
-  private runStartupSync(): void {
-    setTimeout(() => {
-      this.requestIndexingSession('startup').catch((err) => {
-        getLogger().error(
-          'index',
-          'IndexManager',
-          `Startup sync failed: ${err instanceof Error ? err.message : String(err)}`
-        );
-        setIndexingStatus('indexed');
-        this.engineNeedsRebuild = true;
-        this.rebuildSearchEngineIfNeeded(true);
-        if (this.scheduleManager.shouldEnableWatchers() && !this.watchersStarted) {
-          this.startWatchers();
-        }
-      });
-    }, 1000);
+  setSidebarCollapsed(value: boolean): void {
+    setBooleanSetting(SETTING_KEYS.sidebarCollapsed, value);
   }
+}
 
-  private startWatchers(): void {
-    if (this.manualRunInProgress) return;
-    this.watchersStarted = true;
-    this.watcherManager.start(getFolders());
-  }
+function toProgress(state: IndexingState): IndexingProgressRecord {
+  return {
+    status: state.active ? 'running' : 'idle',
+    phase: state.phase,
+    trigger: state.trigger,
+    currentFile: state.queue.currentFile,
+    processed: state.queue.processed,
+    total: state.queue.total,
+    indexedFiles: state.queue.indexedFiles,
+    failedTasks: state.queue.failedTasks,
+    pendingTasks: state.queue.pendingTasks,
+    error: state.lastResult?.error ?? undefined,
+    lastOutcome: state.lastResult?.outcome ?? null,
+  };
+}
 
-  private stopWatchers(): void {
-    this.watchersStarted = false;
-    this.watcherManager.stop();
-  }
-
-  private handleQueueProgress(progress: IndexQueueProgress): void {
-    if (progress.status === 'running') {
-      setIndexingStatus('indexing');
-    } else if (progress.status === 'error') {
-      const duration = Date.now() - this.runStartTime;
-      const message = progress.error ?? 'Unknown error';
-      if (this.currentRunId !== null && this.manualRunInProgress) {
-        failIndexingRun(this.currentRunId, duration, message);
-      }
-      setIndexingStatus('error', message);
-      this.manualRunInProgress = false;
-      this.currentRunId = null;
-
-      this.engineNeedsRebuild = true;
-      this.rebuildSearchEngineIfNeeded(true);
-
-      if (this.scheduleManager.shouldEnableWatchers() && !this.watchersStarted) {
-        this.startWatchers();
-      }
+function databaseSize(): number {
+  const dbPath = getDatabasePath();
+  let total = 0;
+  for (const suffix of ['', '-wal']) {
+    try {
+      total += fs.statSync(`${dbPath}${suffix}`).size;
+    } catch {
+      // Missing WAL file is normal.
     }
   }
-
-  private handleQueueIdle(): void {
-    const wasManualRun = this.manualRunInProgress;
-
-    if (this.currentRunId !== null) {
-      const duration = Date.now() - this.runStartTime;
-      const fileCount = getFileCount();
-      const termCount = getTermCount();
-
-      if (this.manualRunInProgress) {
-        completeIndexingRun(this.currentRunId, duration, fileCount);
-        recordIndexingCompleted(duration, fileCount, termCount);
-      } else {
-        completeIndexingRun(this.currentRunId, duration, fileCount);
-      }
-
-      this.currentRunId = null;
-      this.manualRunInProgress = false;
-    }
-
-    this.releaseIndexingLock();
-    setIndexingStatus('indexed');
-
-    this.engineNeedsRebuild = true;
-    this.rebuildSearchEngineIfNeeded(wasManualRun);
-
-    if (this.scheduleManager.shouldEnableWatchers() && !this.watchersStarted) {
-      this.startWatchers();
-    }
-  }
-
-  private rebuildSearchEngineIfNeeded(force = false): void {
-    if (!this.engineNeedsRebuild) return;
-
-    const throttleMs = 2000;
-    if (!force && Date.now() - this.lastRebuildTime < throttleMs) {
-      return;
-    }
-
-    searchEngine.rebuildIndex();
-    this.engineNeedsRebuild = false;
-    this.lastRebuildTime = Date.now();
-  }
+  return total;
 }
 
 export const indexManager = new IndexManager();

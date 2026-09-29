@@ -1,5 +1,6 @@
 import { ListFilter } from 'lucide-react';
 import type { SortMode } from '../stores/searchStore.js';
+import { Select } from './ui/Select.js';
 
 interface SearchSortSelectorProps {
   value: SortMode;
@@ -19,17 +20,12 @@ export function SearchSortSelector({ value, onChange }: SearchSortSelectorProps)
   return (
     <div className="flex items-center gap-1.5">
       <ListFilter size={13} className="theme-text-tertiary" />
-      <select
+      <Select
         value={value}
-        onChange={(e) => onChange(e.target.value as SortMode)}
-        className="cursor-pointer rounded-md border-none bg-transparent py-1 pr-6 pl-1 text-xs font-medium theme-text-secondary outline-none"
-      >
-        {OPTIONS.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+        options={OPTIONS}
+        onChange={(v) => onChange(v as SortMode)}
+        className="w-32"
+      />
     </div>
   );
 }

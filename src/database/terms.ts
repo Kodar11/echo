@@ -6,70 +6,35 @@ export interface TermRecord {
   document_frequency: number;
 }
 
-export function getOrCreateTerm(term: string): number {
-  const db = getDatabase();
-  const existing = db
-    .prepare('SELECT id FROM Terms WHERE term = ?')
-    .get(term) as { id: number } | undefined;
-  if (existing) {
-    return existing.id;
-  }
-  const result = db
-    .prepare('INSERT INTO Terms (term, document_frequency) VALUES (?, 0)')
-    .run(term);
-  return Number(result.lastInsertRowid);
-}
-
-export function getTermById(id: number): TermRecord | undefined {
-  const db = getDatabase();
-  return db.prepare('SELECT * FROM Terms WHERE id = ?').get(id) as
-    | TermRecord
-    | undefined;
-}
-
 export function getTermByText(term: string): TermRecord | undefined {
-  const db = getDatabase();
-  return db.prepare('SELECT * FROM Terms WHERE term = ?').get(term) as
-    | TermRecord
-    | undefined;
+  return getDatabase()
+    .prepare('SELECT * FROM Terms WHERE term = ?')
+    .get(term) as TermRecord | undefined;
 }
 
 export function getAllTerms(): TermRecord[] {
-  const db = getDatabase();
-  return db.prepare('SELECT * FROM Terms').all() as TermRecord[];
+  return getDatabase().prepare('SELECT * FROM Terms').all() as TermRecord[];
 }
 
 export function getTermCount(): number {
-  const db = getDatabase();
-  const row = db.prepare('SELECT COUNT(*) as count FROM Terms').get() as {
-    count: number;
-  };
+  const row = getDatabase()
+    .prepare('SELECT COUNT(*) as count FROM Terms')
+    .get() as { count: number };
   return row.count;
 }
 
-export function deleteAllTerms(): void {
-  const db = getDatabase();
-  db.prepare('DELETE FROM Terms').run();
-}
-
-export function incrementDocumentFrequency(termId: number): void {
-  const db = getDatabase();
-  db.prepare(
-    'UPDATE Terms SET document_frequency = document_frequency + 1 WHERE id = ?'
-  ).run(termId);
-}
-
-export function decrementDocumentFrequency(termId: number): void {
-  const db = getDatabase();
-  db.prepare(
-    'UPDATE Terms SET document_frequency = MAX(0, document_frequency - 1) WHERE id = ?'
-  ).run(termId);
-}
-
-export function updateDocumentFrequency(termId: number, count: number): void {
-  const db = getDatabase();
-  db.prepare('UPDATE Terms SET document_frequency = ? WHERE id = ?').run(
-    count,
-    termId
-  );
+/**
+ * Ids of terms that occur in at least one document detected as `language`.
+ * Used to build language-specific stemming tables.
+ */
+export function getTermIdsForLanguage(language: string): number[] {
+  const rows = getDatabase()
+    .prepare(
+      `SELECT DISTINCT p.term_id AS id
+       FROM Files f
+       JOIN Postings p ON p.file_id = f.id
+       WHERE f.language = ?`
+    )
+    .all(language) as { id: number }[];
+  return rows.map((row) => row.id);
 }

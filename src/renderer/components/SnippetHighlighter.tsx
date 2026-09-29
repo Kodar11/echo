@@ -34,7 +34,7 @@ export function SnippetHighlighter({
           return (
             <mark
               key={i}
-              className="rounded bg-(--accent) px-0.5 font-medium text-white"
+              className="rounded bg-(--accent) px-0.5 font-medium text-(--accent-foreground)"
             >
               {part.text}
             </mark>

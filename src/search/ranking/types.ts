@@ -14,15 +14,26 @@ export interface RankingContext {
 export interface CandidateResult {
   file: FileRecord;
   filename: string;
+  /** Content relevance: BM25 summed over matched positive query terms. */
   bm25Score: number;
+  /** Index terms (after expansion) that matched in this file's content. */
   matchedTerms: Set<string>;
+  /** The user's positive query words (terms and phrase words). */
+  queryTerms: string[];
+  /** Start positions of positive phrase matches. */
   phrasePositions: number[];
+  /** How many distinct positive term clauses matched this file. */
   matchedQueryTermCount: number;
 }
 
 export interface RankingSignal {
   name: string;
   score(candidate: CandidateResult, context: RankingContext): number;
+}
+
+export interface RankedCandidate {
+  candidate: CandidateResult;
+  score: number;
 }
 
 export interface RankingWeights {

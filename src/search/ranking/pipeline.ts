@@ -1,4 +1,9 @@
-import type { CandidateResult, RankingContext, RankingSignal } from './types.js';
+import type {
+  CandidateResult,
+  RankedCandidate,
+  RankingContext,
+  RankingSignal,
+} from './types.js';
 import { DEFAULT_RANKING_WEIGHTS, type RankingWeights } from './types.js';
 import { Bm25Signal } from './signals/bm25Signal.js';
 import { PhraseSignal } from './signals/phraseSignal.js';
@@ -6,6 +11,12 @@ import { FilenameSignal } from './signals/filenameSignal.js';
 import { FolderPrioritySignal } from './signals/folderPrioritySignal.js';
 import { RecencySignal } from './signals/recencySignal.js';
 
+/**
+ * final score = Σ signal(candidate) × weight
+ *
+ * Ordering is deterministic: score descending, then most recently modified,
+ * then path.
+ */
 export class RankingPipeline {
   private signals: { signal: RankingSignal; weight: number }[] = [];
 
@@ -21,16 +32,22 @@ export class RankingPipeline {
     this.signals.push({ signal, weight });
   }
 
-  rank(candidates: CandidateResult[], context: RankingContext): CandidateResult[] {
-    const scored = candidates.map((candidate) => {
-      let score = 0;
-      for (const { signal, weight } of this.signals) {
-        score += signal.score(candidate, context) * weight;
-      }
-      return { candidate, score };
-    });
+  score(candidate: CandidateResult, context: RankingContext): number {
+    let score = 0;
+    for (const { signal, weight } of this.signals) {
+      score += signal.score(candidate, context) * weight;
+    }
+    return score;
+  }
 
-    scored.sort((a, b) => b.score - a.score);
-    return scored.map((s) => s.candidate);
+  rank(candidates: CandidateResult[], context: RankingContext): RankedCandidate[] {
+    return candidates
+      .map((candidate) => ({ candidate, score: this.score(candidate, context) }))
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          b.candidate.file.modified_time - a.candidate.file.modified_time ||
+          (a.candidate.file.path < b.candidate.file.path ? -1 : a.candidate.file.path > b.candidate.file.path ? 1 : 0)
+      );
   }
 }

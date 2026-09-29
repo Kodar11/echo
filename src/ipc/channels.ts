@@ -10,6 +10,7 @@ export const IPC_CHANNELS = {
   GET_INDEX_STATUS: 'getIndexStatus',
   GET_INDEX_STATISTICS: 'getIndexStatistics',
   DELETE_INDEX: 'deleteIndex',
+  RESET_DATABASE: 'resetDatabase',
   SEARCH: 'search',
   GET_AUTOCOMPLETE_SUGGESTIONS: 'getAutocompleteSuggestions',
   OPEN_FILE: 'openFile',
@@ -37,4 +38,6 @@ export const IPC_CHANNELS = {
   REPAIR_INDEX: 'repairIndex',
   RUN_MAINTENANCE: 'runMaintenance',
   SEND_FRAME_ACTION: 'sendFrameAction',
+  GET_WINDOW_STATE: 'getWindowState',
+  SUBSCRIBE_WINDOW_STATE: 'subscribeWindowState',
 } as const;

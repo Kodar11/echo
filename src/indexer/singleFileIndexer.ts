@@ -1,212 +1,212 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { getFileByPath } from '../database/files.js';
 import {
   clearIndexingFailure,
-  deleteFileById,
-  getFileByPath,
-  insertFile,
   recordIndexingFailure,
-} from '../database/index.js';
+  type FailureCategory,
+} from '../database/indexingFailures.js';
 import {
-  deletePostingsForFileReturningTerms,
-  insertPosting,
-} from '../database/postings.js';
-import { getBooleanSetting, getSetting } from '../database/settings.js';
-import { getOrCreateTerm } from '../database/terms.js';
+  removeFileFromIndex,
+  touchIndexedFile,
+  writeFileIndex,
+} from '../database/indexWriter.js';
 import { extractorManager } from '../services/extractors/ExtractorManager.js';
 import { getLogger } from '../services/logger/logger.js';
-import { TransactionManager } from '../services/transaction/TransactionManager.js';
-import { getDatabase } from '../database/connection.js';
-import { SETTING_KEYS } from '../settings/keys.js';
+import { isCancellation, throwIfCancelled } from './cancellation.js';
+import { categorizeError, errorMessage, isNotFoundError } from './errors.js';
 import { computeFileHash } from './hash.js';
+import { loadIndexingSettings, type IndexingSettings } from './indexingSettings.js';
 import { tokenize } from './tokenizer.js';
 
-export async function indexSingleFile(filePath: string): Promise<boolean> {
-  if (!extractorManager.isSupportedFile(filePath)) {
-    return false;
-  }
+export type TaskStatus =
+  | 'indexed'
+  | 'unchanged'
+  | 'deleted'
+  | 'skipped'
+  | 'failed'
+  | 'cancelled';
 
-  const extractor = extractorManager.getExtractor(filePath);
-  if (!extractor) {
-    return false;
-  }
+export type SkipReason = 'unsupported' | 'too_large' | 'not_a_file' | 'missing';
 
-  const maxFileSizeBytes = getMaxFileSizeBytes();
+export interface TaskOutcome {
+  status: TaskStatus;
+  /** For 'indexed': whether the file was new or previously indexed. */
+  change?: 'added' | 'modified';
+  reason?: SkipReason;
+  category?: FailureCategory;
+  message?: string;
+}
 
-  let stats;
+export interface IndexFileOptions {
+  signal?: AbortSignal;
+  settings?: IndexingSettings;
+  /** Re-extract even if size/mtime/hash are unchanged (config change). */
+  force?: boolean;
+}
+
+/**
+ * Brings the index entry for one path in line with the file on disk.
+ *
+ * Change detection is ordered cheapest-first: stat (size + mtime) → content
+ * hash → extraction. A file that fails is recorded in IndexingFailures and its
+ * previous index entry, if any, is left untouched; a new file that fails gets
+ * no Files row. The final write replaces the file's postings atomically.
+ */
+export async function indexSingleFile(
+  filePath: string,
+  options: IndexFileOptions = {}
+): Promise<TaskOutcome> {
+  const { signal, force = false } = options;
+  const settings = options.settings ?? loadIndexingSettings();
+
   try {
-    stats = await fs.stat(filePath);
+    throwIfCancelled(signal);
+
+    const extractor = extractorManager.getExtractor(filePath);
+    if (!extractor) {
+      // The extension is not (or no longer) indexable.
+      const removed = removeFileFromIndex(filePath, signal);
+      clearIndexingFailure(filePath);
+      return removed
+        ? { status: 'deleted' }
+        : { status: 'skipped', reason: 'unsupported' };
+    }
+
+    let stats;
+    try {
+      stats = await fs.stat(filePath);
+    } catch (err) {
+      if (isNotFoundError(err)) {
+        // The file vanished before we got to it: make the index agree.
+        const removed = removeFileFromIndex(filePath, signal);
+        clearIndexingFailure(filePath);
+        return removed ? { status: 'deleted' } : { status: 'skipped', reason: 'missing' };
+      }
+      return fail(filePath, err, 'read');
+    }
+    throwIfCancelled(signal);
+
+    if (!stats.isFile()) {
+      return { status: 'skipped', reason: 'not_a_file' };
+    }
+
+    const fileState = { size: stats.size, modifiedTime: Math.trunc(stats.mtimeMs) };
+
+    if (settings.maxFileSizeBytes > 0 && stats.size > settings.maxFileSizeBytes) {
+      const removed = removeFileFromIndex(filePath, signal);
+      clearIndexingFailure(filePath);
+      return removed
+        ? { status: 'deleted', reason: 'too_large' }
+        : { status: 'skipped', reason: 'too_large' };
+    }
+
+    const existing = getFileByPath(filePath);
+
+    if (
+      !force &&
+      existing &&
+      existing.content_hash &&
+      existing.size === fileState.size &&
+      existing.modified_time === fileState.modifiedTime
+    ) {
+      return { status: 'unchanged' };
+    }
+
+    let contentHash: string;
+    try {
+      contentHash = await computeFileHash(filePath, signal);
+    } catch (err) {
+      if (isCancellation(err)) throw err;
+      return fail(filePath, err, 'read', fileState);
+    }
+    throwIfCancelled(signal);
+
+    if (!force && existing && existing.content_hash === contentHash) {
+      // Touched but not changed: refresh size/mtime, skip extraction.
+      touchIndexedFile(existing.id, fileState.size, fileState.modifiedTime, signal);
+      clearIndexingFailure(filePath);
+      return { status: 'unchanged' };
+    }
+
+    let extracted;
+    try {
+      // Extractors cannot be interrupted; if the session is cancelled
+      // meanwhile, the result is discarded by the checks below.
+      extracted = await extractor.extract(filePath);
+    } catch (err) {
+      return fail(filePath, err, 'extract', fileState);
+    }
+    throwIfCancelled(signal);
+
+    const { tokens, positions, language } = tokenize(extracted.text, {
+      detectLanguage: settings.detectLanguage,
+      removeStopWords: settings.removeStopWords,
+    });
+    throwIfCancelled(signal);
+
+    try {
+      writeFileIndex(
+        {
+          path: filePath,
+          size: fileState.size,
+          modifiedTime: fileState.modifiedTime,
+          docLength: tokens.length,
+          language,
+          contentHash,
+          author: settings.indexMetadata ? extracted.author ?? null : null,
+          createdAt: settings.indexMetadata ? extracted.createdAt ?? null : null,
+          extension: path.extname(filePath).toLowerCase() || null,
+          positions,
+        },
+        signal
+      );
+    } catch (err) {
+      if (isCancellation(err)) throw err;
+      return fail(filePath, err, 'extract', fileState, 'database_error');
+    }
+
+    clearIndexingFailure(filePath);
+    return { status: 'indexed', change: existing ? 'modified' : 'added' };
   } catch (err) {
-    recordFailure(filePath, err);
-    return false;
+    if (isCancellation(err)) return { status: 'cancelled' };
+    return fail(filePath, err, 'extract');
   }
+}
 
-  if (maxFileSizeBytes > 0 && stats.size > maxFileSizeBytes) {
-    getLogger().info(
-      'index',
-      'singleFileIndexer',
-      `Skipping large file ${filePath} (${stats.size} bytes)`
-    );
-    return false;
-  }
-
-  const existing = getFileByPath(filePath);
-
-  // If size and mtime are unchanged and we already have a hash, skip re-indexing.
-  if (
-    existing &&
-    existing.size === stats.size &&
-    existing.modified_time === stats.mtimeMs &&
-    existing.content_hash
-  ) {
-    return false;
-  }
-
-  let contentHash: string | undefined;
+export function deleteSingleFile(filePath: string, signal?: AbortSignal): TaskOutcome {
   try {
-    contentHash = await computeFileHash(filePath);
+    const removed = removeFileFromIndex(filePath, signal);
+    clearIndexingFailure(filePath);
+    return removed ? { status: 'deleted' } : { status: 'skipped', reason: 'missing' };
   } catch (err) {
+    if (isCancellation(err)) return { status: 'cancelled' };
+    return fail(filePath, err, 'extract', undefined, 'database_error');
+  }
+}
+
+function fail(
+  filePath: string,
+  err: unknown,
+  stage: 'read' | 'extract',
+  fileState?: { size: number; modifiedTime: number },
+  forcedCategory?: FailureCategory
+): TaskOutcome {
+  const message = errorMessage(err);
+  const category = forcedCategory ?? categorizeError(err, stage);
+  try {
+    recordIndexingFailure(filePath, category, message, fileState);
+  } catch (recordErr) {
     getLogger().error(
       'index',
       'singleFileIndexer',
-      `Failed to hash ${filePath}: ${err instanceof Error ? err.message : String(err)}`
+      `Could not record failure for ${filePath}: ${errorMessage(recordErr)}`
     );
   }
-
-  let extracted;
-  try {
-    extracted = await extractor.extract(filePath);
-  } catch (err) {
-    recordFailure(filePath, err);
-    return false;
-  }
-
-  try {
-    const detectLanguage = getBooleanSetting(
-      SETTING_KEYS.enableLanguageDetection,
-      true
-    );
-    const removeStopWords = getBooleanSetting(SETTING_KEYS.removeStopWords, false);
-    const indexMetadata = getBooleanSetting(SETTING_KEYS.indexMetadata, true);
-
-    const { tokens, positions, language } = tokenize(extracted.text, {
-      detectLanguage,
-      removeStopWords,
-    });
-    const docLength = tokens.length;
-
-    const metadata = indexMetadata
-      ? {
-          language,
-          contentHash,
-          author: extracted.author,
-          createdAt: extracted.createdAt,
-          extension: path.extname(filePath).toLowerCase() || null,
-        }
-      : { language, contentHash };
-
-    const transactionManager = new TransactionManager(getDatabase());
-    const fileId = transactionManager.run(() => {
-      // Remove any existing file and postings atomically before inserting the new
-      // record. This prevents orphaned postings when a file is re-indexed.
-      if (existing) {
-        deletePostingsForFileReturningTerms(existing.id);
-        deleteFileById(existing.id);
-      }
-
-      const newFileId = insertFile(
-        filePath,
-        stats.size,
-        stats.mtimeMs,
-        docLength,
-        Date.now(),
-        metadata
-      );
-
-      for (const [term, termPositions] of positions.entries()) {
-        const termId = getOrCreateTerm(term);
-        insertPosting(termId, newFileId, termPositions.length, termPositions);
-      }
-
-      return newFileId;
-    }, { name: `indexSingleFile:${path.basename(filePath)}` });
-
-    clearIndexingFailure(filePath);
-
-    getLogger().debug(
-      'index',
-      'singleFileIndexer',
-      `Indexed ${filePath} (fileId=${fileId})`
-    );
-
-    return true;
-  } catch (err) {
-    recordFailure(filePath, err);
-    return false;
-  }
-}
-
-export function deleteSingleFile(filePath: string): boolean {
-  const existing = getFileByPath(filePath);
-  if (!existing) {
-    return false;
-  }
-
-  const transactionManager = new TransactionManager(getDatabase());
-  transactionManager.run(() => {
-    deletePostingsForFileReturningTerms(existing.id);
-    deleteFileById(existing.id);
-  }, { name: `deleteSingleFile:${path.basename(filePath)}` });
-
-  return true;
-}
-
-function recordFailure(filePath: string, err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err);
-  const category = categorizeError(message);
-  recordIndexingFailure(filePath, category, message);
   getLogger().error(
     'index',
     'singleFileIndexer',
-    `Failed to index ${filePath}: ${message}`
+    `Failed to index ${filePath} [${category}]: ${message.slice(0, 500)}`
   );
-}
-
-function categorizeError(message: string): string {
-  const lower = message.toLowerCase();
-  if (
-    lower.includes('permission') ||
-    lower.includes('eacces') ||
-    lower.includes('access denied')
-  ) {
-    return 'permission_denied';
-  }
-  if (lower.includes('password') || lower.includes('encrypted')) {
-    return 'encrypted';
-  }
-  if (
-    lower.includes('corrupt') ||
-    lower.includes('invalid') ||
-    lower.includes('unable to deserialize')
-  ) {
-    return 'corrupted';
-  }
-  if (
-    lower.includes('locked') ||
-    lower.includes('eminuse') ||
-    lower.includes('resource busy')
-  ) {
-    return 'locked';
-  }
-  if (lower.includes('unsupported') || lower.includes('not supported')) {
-    return 'unsupported';
-  }
-  return 'extraction_failed';
-}
-
-function getMaxFileSizeBytes(): number {
-  const raw = getSetting(SETTING_KEYS.maxFileSizeBytes);
-  if (!raw) return 0;
-  const value = parseInt(raw, 10);
-  return isNaN(value) ? 0 : value;
+  return { status: 'failed', category, message };
 }

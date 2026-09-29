@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { FileRecord } from '../database/files.js';
 import type { FilterNode } from './queryParser.js';
-import { evaluateFilter } from './filters.js';
+import { compileFilter, evaluateFilter, FilterError } from './filters.js';
 
 function makeFile(partial: Partial<FileRecord> = {}): FileRecord {
   return {
@@ -66,6 +66,41 @@ describe('evaluateFilter', () => {
     expect(evaluateFilter(file, filter('created', ':', 'last7days'))).toBe(
       true
     );
+  });
+
+  it('uses day ranges for comparisons on dates', () => {
+    const file = makeFile({ modified_time: new Date(2024, 0, 1, 15, 0).getTime() });
+    expect(evaluateFilter(file, filter('modified', ':', '2024-01-01'))).toBe(true);
+    expect(evaluateFilter(file, filter('modified', '>', '2024-01-01'))).toBe(false);
+    expect(evaluateFilter(file, filter('modified', '>=', '2024-01-01'))).toBe(true);
+    expect(evaluateFilter(file, filter('modified', '<=', '2024-01-01'))).toBe(true);
+    expect(evaluateFilter(file, filter('modified', '<', '2024-01-01'))).toBe(false);
+    expect(evaluateFilter(file, filter('before', ':', '2024-01-02'))).toBe(true);
+    expect(evaluateFilter(file, filter('after', ':', '2023-12-31'))).toBe(true);
+  });
+
+  it.each([
+    ['nosuchkey', ':', 'x', /Unknown filter/],
+    ['type', ':', 'p d f', /Invalid file type/],
+    ['type', '>', 'pdf', /does not support/],
+    ['size', '>', 'huge', /Invalid size/],
+    ['modified', ':', '1', /Invalid date/],
+    ['modified', ':', '2024-13-01', /Invalid date/],
+    ['created', '<', 'yesterdayish', /Invalid date/],
+    ['language', ':', 'xx', /Unknown language/],
+  ])('rejects invalid filter %s%s%s instead of matching everything', (key, op, value, message) => {
+    expect(() => compileFilter(filter(key, op, value))).toThrow(FilterError);
+    expect(() => compileFilter(filter(key, op, value))).toThrow(message);
+  });
+
+  it('accepts language names and aliases', () => {
+    const file = makeFile({ language: 'eng' });
+    expect(evaluateFilter(file, filter('lang', ':', 'English'))).toBe(true);
+  });
+
+  it('folder filter ignores separator style', () => {
+    const file = makeFile({ path: 'C:\\work\\system design\\doc.pdf' });
+    expect(evaluateFilter(file, filter('folder', ':', 'work/system design'))).toBe(true);
   });
 
   it('matches size comparisons', () => {

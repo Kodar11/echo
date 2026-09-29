@@ -49,9 +49,14 @@ describe('LockManager', () => {
 
   it('renews the lock expiration', () => {
     manager.acquire('owner-a');
+    getDatabase().prepare('UPDATE IndexLock SET expires_at = ? WHERE id = 1').run(Date.now() + 10);
     const before = manager.getLock()!.expires_at;
-    manager.renew('owner-a');
-    const after = manager.getLock()!.expires_at;
-    expect(after).toBeGreaterThan(before);
+    expect(manager.renew('owner-a')).toBe(true);
+    expect(manager.getLock()!.expires_at).toBeGreaterThan(before);
+  });
+
+  it('only the owner can renew', () => {
+    manager.acquire('owner-a');
+    expect(manager.renew('owner-b')).toBe(false);
   });
 });

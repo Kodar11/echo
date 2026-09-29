@@ -45,6 +45,20 @@ describe('IgnoreRuleManager', () => {
     expect(manager.shouldIgnore('/docs/readme.md')).toBe(false);
   });
 
+  it('evaluates rules relative to the indexed root', () => {
+    // An indexed folder that lives under a directory named "build" must not
+    // be ignored wholesale by the default `build/` rule.
+    expect(manager.shouldIgnore('C:/work/build/notes/a.txt', 'C:/work/build/notes')).toBe(false);
+    expect(manager.shouldIgnore('C:/work/notes/build/a.txt', 'C:/work/notes')).toBe(true);
+  });
+
+  it('re-seeds defaults for a new database but respects deletions', () => {
+    for (const rule of manager.getRules()) manager.deleteRule(rule.id);
+    const again = new IgnoreRuleManager();
+    again.initialize();
+    expect(again.getRules()).toHaveLength(0);
+  });
+
   it('adds custom rules', () => {
     manager.addRule('*.bak', 'glob');
     expect(manager.shouldIgnore('/data/archive.bak')).toBe(true);

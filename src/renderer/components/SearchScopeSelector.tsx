@@ -26,9 +26,9 @@ export function SearchScopeSelector({
     <div className="flex flex-wrap items-center gap-1.5">
       <button
         onClick={() => onChange([])}
-        className={`rounded-md px-2 py-1 text-xs font-medium transition ${
+        className={`rounded-md px-2 py-1 text-xs font-medium transition focus-ring ${
           allSelected
-            ? 'bg-(--accent) text-white dark:text-black'
+            ? 'bg-(--accent) text-(--accent-foreground)'
             : 'bg-(--panel) theme-text-secondary hover:bg-(--border)'
         }`}
       >
@@ -40,9 +40,9 @@ export function SearchScopeSelector({
           <button
             key={folder.id}
             onClick={() => toggleFolder(folder.id)}
-            className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition ${
+            className={`inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition focus-ring ${
               selected
-                ? 'bg-(--accent) text-white dark:text-black'
+                ? 'bg-(--accent) text-(--accent-foreground)'
                 : 'bg-(--panel) theme-text-secondary hover:bg-(--border)'
             }`}
           >

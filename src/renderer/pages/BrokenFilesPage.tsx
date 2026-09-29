@@ -9,6 +9,11 @@ import {
 } from 'lucide-react';
 import { useFailuresStore } from '../stores/failuresStore.js';
 import { getBasename, getDirname } from '../lib/path.js';
+import { PageShell } from '../components/ui/PageShell.js';
+import { EmptyState } from '../components/EmptyState.js';
+import { Button } from '../components/ui/Button.js';
+import { IconButton } from '../components/ui/IconButton.js';
+import { Badge } from '../components/ui/Badge.js';
 
 const CATEGORY_LABELS: Record<string, string> = {
   corrupted: 'Corrupted file',
@@ -27,49 +32,37 @@ export function BrokenFilesPage() {
     loadFailures();
   }, [loadFailures]);
 
-  if (isLoading && failures.length === 0) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-sm theme-text-secondary">Loading failures…</p>
-      </div>
-    );
-  }
-
-  if (failures.length === 0) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 px-8">
-        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-(--panel)">
-          <RefreshCw size={22} className="theme-text-secondary" />
-        </div>
-        <div className="text-center">
-          <h2 className="text-sm font-medium theme-text">No broken files</h2>
-          <p className="mt-1 max-w-xs text-xs theme-text-secondary">
-            Indexing failures will appear here so you can retry or ignore them.
-          </p>
-        </div>
-      </div>
-    );
-  }
+  const subtitle =
+    failures.length > 0
+      ? `${failures.length} indexing failure${failures.length === 1 ? '' : 's'}`
+      : 'Indexing failures will appear here';
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto px-8 py-6">
-      <div className="mx-auto w-full max-w-4xl">
-        <div className="mb-6 flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-medium theme-text">Broken Files</h1>
-            <p className="text-xs theme-text-secondary">
-              {failures.length} indexing failure{failures.length === 1 ? '' : 's'}
-            </p>
-          </div>
-          <button
-            onClick={() => loadFailures()}
-            className="flex items-center gap-2 rounded-lg border border-(--border) bg-(--panel) px-3 py-1.5 text-xs font-medium theme-text-secondary transition hover:theme-text"
-          >
-            <RefreshCw size={13} />
-            Refresh
-          </button>
-        </div>
-
+    <PageShell
+      title="Broken Files"
+      subtitle={subtitle}
+      maxWidth="xl"
+      isLoading={isLoading && failures.length === 0}
+      loadingText="Loading failures…"
+      actions={
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => loadFailures()}
+          disabled={isLoading}
+        >
+          <RefreshCw size={13} />
+          Refresh
+        </Button>
+      }
+    >
+      {failures.length === 0 && !isLoading ? (
+        <EmptyState
+          icon={RefreshCw}
+          title="No broken files"
+          description="Indexing failures will appear here so you can retry or ignore them."
+        />
+      ) : (
         <div className="space-y-2">
           {failures.map((failure) => (
             <FailureCard
@@ -80,8 +73,8 @@ export function BrokenFilesPage() {
             />
           ))}
         </div>
-      </div>
-    </div>
+      )}
+    </PageShell>
   );
 }
 
@@ -96,14 +89,16 @@ function FailureCard({
 }) {
   return (
     <div
-      className={`rounded-xl border bg-(--surface) p-4 ${
-        failure.ignored ? 'border-(--border) opacity-60' : 'border-(--border)'
+      className={`rounded-xl border bg-(--surface) p-4 transition ${
+        failure.ignored
+          ? 'border-(--border) opacity-60'
+          : 'border-(--border) hover:border-(--border-strong)'
       }`}
     >
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <XCircle size={14} className="text-red-500" />
+            <XCircle size={14} className="text-(--danger)" />
             <p className="truncate text-sm font-medium theme-text">
               {getBasename(failure.path)}
             </p>
@@ -112,10 +107,10 @@ function FailureCard({
             {getDirname(failure.path)}
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <span className="rounded-md bg-(--panel) px-2 py-0.5 text-[11px] font-medium theme-text-secondary">
+            <Badge variant={failure.ignored ? 'default' : 'danger'}>
               {CATEGORY_LABELS[failure.category] ?? failure.category}
-            </span>
-            <span className="text-[11px] theme-text-tertiary">
+            </Badge>
+            <span className="text-micro theme-text-tertiary">
               {formatTime(failure.occurredAt)}
             </span>
           </div>
@@ -123,41 +118,39 @@ function FailureCard({
         </div>
 
         <div className="flex items-center gap-1">
-          <button
+          <IconButton
             onClick={onRetry}
             disabled={failure.ignored}
-            className="rounded p-1.5 hover:bg-(--panel) disabled:opacity-40"
-            title="Retry indexing"
+            tooltip="Retry indexing"
           >
             <RefreshCw size={14} className="theme-text-secondary" />
-          </button>
-          <button
+          </IconButton>
+          <IconButton
             onClick={() => window.electron.openFile({ path: failure.path })}
-            className="rounded p-1.5 hover:bg-(--panel)"
-            title="Open file"
+            tooltip="Open file"
           >
             <ExternalLink size={14} className="theme-text-secondary" />
-          </button>
-          <button
+          </IconButton>
+          <IconButton
             onClick={() =>
               window.electron.openContainingFolder({ path: failure.path })
             }
-            className="rounded p-1.5 hover:bg-(--panel)"
-            title="Open folder"
+            tooltip="Open folder"
           >
             <FolderOpen size={14} className="theme-text-secondary" />
-          </button>
-          <button
+          </IconButton>
+          <IconButton
             onClick={onToggleIgnore}
-            className="rounded p-1.5 hover:bg-(--panel)"
-            title={failure.ignored ? 'Stop ignoring' : 'Ignore future indexing'}
+            tooltip={
+              failure.ignored ? 'Stop ignoring' : 'Ignore future indexing'
+            }
           >
             {failure.ignored ? (
               <ShieldOff size={14} className="theme-text-secondary" />
             ) : (
               <Shield size={14} className="theme-text-secondary" />
             )}
-          </button>
+          </IconButton>
         </div>
       </div>
     </div>

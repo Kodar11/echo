@@ -13,6 +13,8 @@ interface SearchState {
   results: SearchResult[];
   suggestions: string[];
   isSearching: boolean;
+  /** Parse / filter error for the current query, shown instead of results. */
+  error: QueryError | null;
   totalCount: number;
   durationMs: number;
   sort: SortMode;
@@ -59,6 +61,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   results: [],
   suggestions: [],
   isSearching: false,
+  error: null,
   totalCount: 0,
   durationMs: 0,
   sort: 'relevance',
@@ -85,26 +88,27 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   },
   search: async (query) => {
     const trimmed = query.trim();
+    const generation = ++searchGeneration;
     if (!trimmed) {
-      set({ results: [], isSearching: false, totalCount: 0, durationMs: 0 });
+      set({ results: [], isSearching: false, error: null, totalCount: 0, durationMs: 0 });
       return;
     }
 
-    const generation = ++searchGeneration;
     set({ isSearching: true });
 
     try {
       const response = await window.electron.search({
         query: trimmed,
         folderIds: get().folderIds.length > 0 ? get().folderIds : undefined,
+        requestId: generation,
       });
 
-      // Ignore stale search results.
-      if (generation !== searchGeneration) return;
+      // A newer query was issued meanwhile: never let this one overwrite it.
+      if (generation !== searchGeneration || response.cancelled) return;
 
-      const sorted = sortResults(response.results, get().sort);
       set({
-        results: sorted,
+        results: sortResults(response.results, get().sort),
+        error: response.error ?? null,
         totalCount: response.totalCount,
         durationMs: response.durationMs,
         isSearching: false,
@@ -112,7 +116,13 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     } catch (err) {
       if (generation === searchGeneration) {
         console.error('Search failed:', err);
-        set({ results: [], isSearching: false, totalCount: 0, durationMs: 0 });
+        set({
+          results: [],
+          isSearching: false,
+          error: { kind: 'syntax', message: 'Search failed. Please try again.' },
+          totalCount: 0,
+          durationMs: 0,
+        });
       }
     }
   },

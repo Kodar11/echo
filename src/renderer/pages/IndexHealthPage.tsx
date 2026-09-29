@@ -14,6 +14,11 @@ import {
 import { useHealthStore } from '../stores/healthStore.js';
 import { useIndexStore } from '../stores/indexStore.js';
 import { formatBytes } from '../lib/format.js';
+import { PageShell } from '../components/ui/PageShell.js';
+import { Card } from '../components/ui/Card.js';
+import { Button } from '../components/ui/Button.js';
+import { EmptyState } from '../components/EmptyState.js';
+import { Badge } from '../components/ui/Badge.js';
 
 export function IndexHealthPage() {
   const { stats, isLoading, loadHealthStats } = useHealthStore();
@@ -23,89 +28,98 @@ export function IndexHealthPage() {
     loadHealthStats();
   }, [loadHealthStats]);
 
-  if (isLoading && !stats) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-sm theme-text-secondary">Loading health stats…</p>
-      </div>
-    );
-  }
-
-  if (!stats) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-sm theme-text-secondary">No health data available.</p>
-      </div>
-    );
-  }
-
   return (
-    <div className="flex h-full flex-col overflow-y-auto px-8 py-6">
-      <div className="mx-auto w-full max-w-4xl">
-        <div className="mb-6 flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-medium theme-text">Index Health</h1>
-            <p className="text-xs theme-text-secondary">
-              Monitor the state of your search index
-            </p>
+    <PageShell
+      title="Index Health"
+      subtitle="Monitor the state of your search index"
+      maxWidth="xl"
+      isLoading={isLoading && !stats}
+      loadingText="Loading health stats…"
+      actions={
+        <Button variant="primary" size="sm" onClick={() => startIndexing()}>
+          <RefreshCw size={14} />
+          Sync now
+        </Button>
+      }
+    >
+      {!stats ? (
+        <EmptyState
+          icon={Activity}
+          title="No health data"
+          description="Health information will appear once your index has been built."
+        />
+      ) : (
+        <>
+          <StatusBanner status={stats.status} />
+
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard
+              icon={FileText}
+              label="Indexed files"
+              value={stats.indexedFiles.toLocaleString()}
+            />
+            <StatCard
+              icon={FolderOpen}
+              label="Folders"
+              value={stats.totalFolders.toLocaleString()}
+            />
+            <StatCard
+              icon={Layers}
+              label="Unique terms"
+              value={stats.totalTerms.toLocaleString()}
+            />
+            <StatCard
+              icon={Database}
+              label="Database size"
+              value={formatBytes(stats.databaseSizeBytes)}
+            />
+            <StatCard
+              icon={Activity}
+              label="Failed files"
+              value={stats.failedFiles.toLocaleString()}
+              variant={stats.failedFiles > 0 ? 'warning' : 'default'}
+            />
+            <StatCard
+              icon={FolderOpen}
+              label="Inaccessible"
+              value={stats.inaccessibleFiles.toLocaleString()}
+              variant={stats.inaccessibleFiles > 0 ? 'warning' : 'default'}
+            />
+            <StatCard
+              icon={FileText}
+              label="Ignored"
+              value={stats.ignoredFiles.toLocaleString()}
+            />
+            <StatCard
+              icon={FileText}
+              label="Unsupported type"
+              value={stats.unsupportedFiles.toLocaleString()}
+            />
+            <StatCard
+              icon={FileText}
+              label="Over size limit"
+              value={stats.oversizedFiles.toLocaleString()}
+            />
+            <StatCard
+              icon={Clock}
+              label="Pending jobs"
+              value={stats.pendingJobs.toLocaleString()}
+              variant={stats.pendingJobs > 0 ? 'warning' : 'default'}
+            />
+            <StatCard
+              icon={Clock}
+              label="Last indexed"
+              value={formatTime(stats.lastIndexedAt)}
+            />
+            <StatCard
+              icon={Clock}
+              label="Last synced"
+              value={formatTime(stats.lastSyncedAt)}
+            />
           </div>
-          <button
-            onClick={() => startIndexing()}
-            className="flex items-center gap-2 rounded-lg bg-(--accent) px-4 py-2 text-sm font-medium text-white transition hover:bg-(--accent-hover)"
-          >
-            <RefreshCw size={14} />
-            Sync now
-          </button>
-        </div>
-
-        <StatusBanner status={stats.status} />
-
-        <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard
-            icon={FileText}
-            label="Indexed files"
-            value={stats.indexedFiles.toLocaleString()}
-          />
-          <StatCard
-            icon={FolderOpen}
-            label="Folders"
-            value={stats.totalFolders.toLocaleString()}
-          />
-          <StatCard
-            icon={Layers}
-            label="Unique terms"
-            value={stats.totalTerms.toLocaleString()}
-          />
-          <StatCard
-            icon={Database}
-            label="Database size"
-            value={formatBytes(stats.databaseSizeBytes)}
-          />
-          <StatCard
-            icon={Activity}
-            label="Failed files"
-            value={stats.failedFiles.toLocaleString()}
-            variant={stats.failedFiles > 0 ? 'warning' : 'default'}
-          />
-          <StatCard
-            icon={Clock}
-            label="Pending jobs"
-            value={stats.pendingJobs.toLocaleString()}
-            variant={stats.pendingJobs > 0 ? 'warning' : 'default'}
-          />
-          <StatCard
-            icon={Clock}
-            label="Last indexed"
-            value={formatTime(stats.lastIndexedAt)}
-          />
-          <StatCard
-            icon={Clock}
-            label="Last synced"
-            value={formatTime(stats.lastSyncedAt)}
-          />
-        </div>
-      </div>
-    </div>
+        </>
+      )}
+    </PageShell>
   );
 }
 
@@ -114,38 +128,44 @@ function StatusBanner({ status }: { status: HealthStatus }) {
     healthy: {
       icon: CheckCircle2,
       label: 'Healthy',
-      class: 'bg-green-500/10 text-green-600 border-green-500/20',
+      variant: 'success' as const,
+      description: 'Your index is up to date and operating normally.',
     },
     warning: {
       icon: AlertTriangle,
       label: 'Warning',
-      class: 'bg-yellow-500/10 text-yellow-600 border-yellow-500/20',
+      variant: 'warning' as const,
+      description: 'Review the details below for attention items.',
     },
     error: {
       icon: XCircle,
       label: 'Error',
-      class: 'bg-red-500/10 text-red-600 border-red-500/20',
+      variant: 'danger' as const,
+      description: 'Errors detected. Check the Broken Files report.',
     },
   };
 
-  const { icon: Icon, label, class: className } = config[status];
+  const { icon: Icon, label, variant, description } = config[status];
 
   return (
-    <div
-      className={`flex items-center gap-3 rounded-xl border px-4 py-3 ${className}`}
-    >
-      <Icon size={20} />
-      <div>
-        <p className="text-sm font-medium">{label}</p>
-        <p className="text-xs opacity-80">
-          {status === 'healthy'
-            ? 'Your index is up to date and operating normally.'
-            : status === 'warning'
-            ? 'Review the details below for attention items.'
-            : 'Errors detected. Check the Broken Files report.'}
-        </p>
+    <Card className="p-4">
+      <div className="flex items-start gap-3">
+        <div className="mt-0.5">
+          <Icon size={20} className={
+            variant === 'success' ? 'text-(--success)' :
+            variant === 'warning' ? 'text-(--warning)' :
+            'text-(--danger)'
+          } />
+        </div>
+        <div>
+          <div className="flex items-center gap-2">
+            <p className="text-sm font-medium theme-text">{label}</p>
+            <Badge variant={variant}>{status}</Badge>
+          </div>
+          <p className="mt-0.5 text-xs theme-text-secondary">{description}</p>
+        </div>
       </div>
-    </div>
+    </Card>
   );
 }
 
@@ -161,16 +181,16 @@ function StatCard({
   variant?: 'default' | 'warning';
 }) {
   return (
-    <div className="rounded-xl border border-(--border) bg-(--surface) p-4">
+    <Card className="p-4">
       <div className="flex items-center gap-2.5">
         <div
           className={`flex h-8 w-8 items-center justify-center rounded-lg ${
-            variant === 'warning' ? 'bg-yellow-500/10' : 'bg-(--panel)'
+            variant === 'warning' ? 'bg-(--warning-soft)' : 'bg-(--panel)'
           }`}
         >
           <Icon
             size={16}
-            className={variant === 'warning' ? 'text-yellow-600' : 'theme-text-secondary'}
+            className={variant === 'warning' ? 'text-(--warning)' : 'theme-text-secondary'}
           />
         </div>
         <div>
@@ -178,7 +198,7 @@ function StatCard({
           <p className="text-base font-medium theme-text">{value}</p>
         </div>
       </div>
-    </div>
+    </Card>
   );
 }
 

@@ -25,6 +25,7 @@
     "better-sqlite3": "^12.11.1",
     "cheerio": "^1.2.0",
     "chokidar": "^5.0.0",
+    "clsx": "^2.1.1",
     "franc-min": "^6.2.0",
     "jszip": "^3.10.1",
     "lucide-react": "^1.21.0",

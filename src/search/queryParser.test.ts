@@ -149,6 +149,47 @@ describe('parseQuery', () => {
     });
   });
 
+  it('quoted single word is a one-word phrase (exact match)', () => {
+    expect(parseQuery('"Data"').root).toEqual({ type: 'phrase', value: 'data', terms: ['data'] });
+  });
+
+  it('a hyphenated bare word becomes a phrase using the indexing tokenizer', () => {
+    expect(parseQuery('run-time').root).toEqual({
+      type: 'phrase',
+      value: 'run-time',
+      terms: ['run', 'time'],
+    });
+  });
+
+  it('drops punctuation-only words', () => {
+    expect(parseQuery('database --- cache').root).toEqual({
+      type: 'and',
+      left: { type: 'term', value: 'database' },
+      right: { type: 'term', value: 'cache' },
+    });
+  });
+
+  it('keeps Devanagari combining marks inside phrase terms', () => {
+    const result = parseQuery('"नमस्ते दुनिया"');
+    expect(result.root).toMatchObject({ type: 'phrase', terms: ['नमस्ते', 'दुनिया'] });
+  });
+
+  it.each([
+    ['"unclosed', 'Unclosed quote', 0],
+    ['(a OR b', 'Missing closing parenthesis', 0],
+    ['a)', 'Unmatched closing parenthesis', 1],
+    ['AND a', 'Missing search term before AND', 0],
+    ['a OR', 'Query ends with an operator', 4],
+    ['a AND OR b', 'Missing search term before OR', 6],
+    ['()', 'Empty parentheses', 0],
+    ['size>', 'Filter "size>" needs a value', 0],
+    ['folder:"unclosed', 'Unclosed quote in filter value', 7],
+  ])('returns a structured error for %s', (input, message, position) => {
+    const result = parseQuery(input);
+    expect(result.root).toBeNull();
+    expect(result.error).toEqual({ kind: 'syntax', message, position });
+  });
+
   it('parses created filter', () => {
     const result = parseQuery('created>2024-01-01');
     expect(result.root).toEqual({

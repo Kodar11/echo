@@ -1,37 +1,56 @@
 export function levenshteinDistance(a: string, b: string): number {
-  const matrix: number[][] = [];
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
 
-  for (let i = 0; i <= b.length; i++) {
-    matrix[i] = [i];
-  }
-  for (let j = 0; j <= a.length; j++) {
-    matrix[0][j] = j;
-  }
-
-  for (let i = 1; i <= b.length; i++) {
-    for (let j = 1; j <= a.length; j++) {
-      const cost = b[i - 1] === a[j - 1] ? 0 : 1;
-      matrix[i][j] = Math.min(
-        matrix[i - 1][j] + 1, // deletion
-        matrix[i][j - 1] + 1, // insertion
-        matrix[i - 1][j - 1] + cost // substitution
-      );
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  let current = new Array<number>(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost);
     }
+    [previous, current] = [current, previous];
   }
+  return previous[b.length];
+}
 
-  return matrix[b.length][a.length];
+/**
+ * True if the edit distance is at most `max`. Stops as soon as every cell of
+ * a row exceeds `max`, so non-matches are rejected cheaply.
+ */
+export function withinEditDistance(a: string, b: string, max: number): boolean {
+  if (Math.abs(a.length - b.length) > max) return false;
+  if (a === b) return true;
+
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  let current = new Array<number>(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    current[0] = i;
+    let rowMin = current[0];
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost);
+      if (current[j] < rowMin) rowMin = current[j];
+    }
+    if (rowMin > max) return false;
+    [previous, current] = [current, previous];
+  }
+  return previous[b.length] <= max;
 }
 
 export function findFuzzyMatches(
   query: string,
-  candidates: string[],
-  maxDistance: number
+  candidates: Iterable<string>,
+  maxDistance: number,
+  limit = Infinity
 ): string[] {
   const matches: string[] = [];
   for (const candidate of candidates) {
-    if (Math.abs(candidate.length - query.length) > maxDistance) continue;
-    if (levenshteinDistance(query, candidate) <= maxDistance) {
+    if (withinEditDistance(query, candidate, maxDistance)) {
       matches.push(candidate);
+      if (matches.length >= limit) break;
     }
   }
   return matches;

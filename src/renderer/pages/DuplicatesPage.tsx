@@ -1,13 +1,19 @@
 import { useEffect, useState } from 'react';
-import { Copy, ExternalLink, FileText, FolderOpen } from 'lucide-react';
+import { Copy, ExternalLink, FileText, FolderOpen, RefreshCw } from 'lucide-react';
 import { getBasename, getDirname } from '../lib/path.js';
 import { formatBytes } from '../lib/format.js';
+import { PageShell } from '../components/ui/PageShell.js';
+import { EmptyState } from '../components/EmptyState.js';
+import { Card } from '../components/ui/Card.js';
+import { Button } from '../components/ui/Button.js';
+import { IconButton } from '../components/ui/IconButton.js';
 
 export function DuplicatesPage() {
   const [groups, setGroups] = useState<DuplicateGroup[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
+  const loadDuplicates = () => {
+    setIsLoading(true);
     let cancelled = false;
     window.electron
       .getDuplicates()
@@ -20,56 +26,52 @@ export function DuplicatesPage() {
     return () => {
       cancelled = true;
     };
+  };
+
+  useEffect(() => {
+    const cleanup = loadDuplicates();
+    return cleanup;
   }, []);
-
-  if (isLoading) {
-    return (
-      <div className="flex h-full items-center justify-center">
-        <p className="text-sm theme-text-secondary">Scanning for duplicates…</p>
-      </div>
-    );
-  }
-
-  if (groups.length === 0) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 px-8">
-        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-(--panel)">
-          <Copy size={22} strokeWidth={1.5} className="theme-text-secondary" />
-        </div>
-        <div className="text-center">
-          <h2 className="text-sm font-medium theme-text">No duplicates found</h2>
-          <p className="mt-1 max-w-xs text-xs theme-text-secondary">
-            Echo compares file contents by hash. Add more folders and index them
-            to find duplicate files.
-          </p>
-        </div>
-      </div>
-    );
-  }
 
   const totalWasted = groups.reduce((sum, g) => sum + g.wastedSpace, 0);
 
-  return (
-    <div className="flex h-full flex-col overflow-y-auto px-8 py-6">
-      <div className="mx-auto w-full max-w-3xl">
-        <div className="mb-6 flex items-end justify-between">
-          <div>
-            <h1 className="text-lg font-medium theme-text">
-              {groups.length} duplicate group{groups.length === 1 ? '' : 's'}
-            </h1>
-            <p className="text-xs theme-text-secondary">
-              {formatBytes(totalWasted)} potentially recoverable
-            </p>
-          </div>
-        </div>
+  const subtitle = groups.length > 0
+    ? `${formatBytes(totalWasted)} potentially recoverable`
+    : 'Find duplicate files across indexed folders';
 
+  return (
+    <PageShell
+      title={groups.length > 0 ? `${groups.length} duplicate group${groups.length === 1 ? '' : 's'}` : 'Duplicates'}
+      subtitle={subtitle}
+      maxWidth="lg"
+      isLoading={isLoading}
+      loadingText="Scanning for duplicates…"
+      actions={
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={loadDuplicates}
+          disabled={isLoading}
+        >
+          <RefreshCw size={13} />
+          Refresh
+        </Button>
+      }
+    >
+      {groups.length === 0 && !isLoading ? (
+        <EmptyState
+          icon={Copy}
+          title="No duplicates found"
+          description="Echo compares file contents by hash. Add more folders and index them to find duplicate files."
+        />
+      ) : (
         <div className="space-y-4">
           {groups.map((group) => (
             <DuplicateGroupCard key={group.hash} group={group} />
           ))}
         </div>
-      </div>
-    </div>
+      )}
+    </PageShell>
   );
 }
 
@@ -77,7 +79,7 @@ function DuplicateGroupCard({ group }: { group: DuplicateGroup }) {
   const hashPreview = `${group.hash.slice(0, 12)}…${group.hash.slice(-8)}`;
 
   return (
-    <div className="rounded-xl border border-(--border) bg-(--surface) p-4">
+    <Card className="p-4">
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-(--panel) theme-text-secondary">
@@ -85,7 +87,7 @@ function DuplicateGroupCard({ group }: { group: DuplicateGroup }) {
           </div>
           <div>
             <p className="text-xs font-medium theme-text">{hashPreview}</p>
-            <p className="text-[11px] theme-text-secondary">
+            <p className="text-micro theme-text-secondary">
               {group.count} copies · {formatBytes(group.totalSize)} total ·{' '}
               {formatBytes(group.wastedSpace)} wasted
             </p>
@@ -105,38 +107,38 @@ function DuplicateGroupCard({ group }: { group: DuplicateGroup }) {
                 <p className="truncate text-xs font-medium theme-text">
                   {getBasename(file.path)}
                 </p>
-                <p className="truncate text-[11px] theme-text-secondary">
+                <p className="truncate text-micro theme-text-secondary">
                   {getDirname(file.path)}
                 </p>
               </div>
             </div>
 
             <div className="flex items-center gap-3">
-              <span className="text-[11px] theme-text-tertiary">
+              <span className="text-micro theme-text-tertiary">
                 {formatBytes(file.size)}
               </span>
-              <div className="flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
-                <button
+              <div className="flex items-center gap-1">
+                <IconButton
                   onClick={() => window.electron.openFile({ path: file.path })}
-                  className="rounded p-1 hover:bg-(--surface)"
-                  title="Open file"
+                  tooltip="Open file"
+                  className="h-7 w-7"
                 >
-                  <ExternalLink size={13} strokeWidth={1.7} className="theme-text-secondary" />
-                </button>
-                <button
+                  <ExternalLink size={13} strokeWidth={1.7} />
+                </IconButton>
+                <IconButton
                   onClick={() =>
                     window.electron.openContainingFolder({ path: file.path })
                   }
-                  className="rounded p-1 hover:bg-(--surface)"
-                  title="Open folder"
+                  tooltip="Open folder"
+                  className="h-7 w-7"
                 >
-                  <FolderOpen size={13} strokeWidth={1.7} className="theme-text-secondary" />
-                </button>
+                  <FolderOpen size={13} strokeWidth={1.7} />
+                </IconButton>
               </div>
             </div>
           </li>
         ))}
       </ul>
-    </div>
+    </Card>
   );
 }

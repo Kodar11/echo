@@ -12,31 +12,33 @@ export const pdfExtractor: FileExtractor = {
     const buffer = await fs.readFile(filePath);
     const parser = new PDFParse({ data: buffer });
 
-    // getText and getInfo must run sequentially; pdfjs-dist cannot handle
-    // concurrent operations on the same parser instance.
-    const textResult = await parser.getText();
-
-    let author: string | undefined;
-    let createdAt: number | undefined;
     try {
-      const infoResult = await parser.getInfo();
-      const info = infoResult?.info ?? {};
-      author = typeof info.Author === 'string' ? info.Author : undefined;
-      createdAt =
-        parseDateToTimestamp(info.CreationDate) ??
-        parseDateToTimestamp(info.CreationDate?.toString()) ??
-        infoResult?.getDateNode?.().CreationDate?.getTime() ??
-        undefined;
-    } catch (err) {
-      console.warn(`Failed to read PDF metadata for ${filePath}:`, err);
+      // getText and getInfo must run sequentially; pdfjs-dist cannot handle
+      // concurrent operations on the same parser instance.
+      const textResult = await parser.getText();
+
+      let author: string | undefined;
+      let createdAt: number | undefined;
+      try {
+        const infoResult = await parser.getInfo();
+        const info = infoResult?.info ?? {};
+        author = typeof info.Author === 'string' ? info.Author : undefined;
+        createdAt =
+          parseDateToTimestamp(info.CreationDate) ??
+          parseDateToTimestamp(info.CreationDate?.toString()) ??
+          infoResult?.getDateNode?.().CreationDate?.getTime() ??
+          undefined;
+      } catch {
+        // Metadata is optional; the text is what matters.
+      }
+
+      return {
+        text: normalizeText(textResult.text),
+        author,
+        createdAt,
+      };
+    } finally {
+      await parser.destroy().catch(() => undefined);
     }
-
-    await parser.destroy();
-
-    return {
-      text: normalizeText(textResult.text),
-      author,
-      createdAt,
-    };
   },
 };
