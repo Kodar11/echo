@@ -2,9 +2,8 @@ import clsx from 'clsx';
 import echoIcon from '../../../assets/echo-icon.png';
 
 /**
- * The Echo mark: the product icon (a search lens sending out ripples), used
- * for the wordmark, the search home and brand moments. The artwork is a
- * full-bleed square, so it is clipped to the app-icon corner radius.
+ * The Echo mark: the product icon (a signal point with receding rings), used
+ * for the wordmark, the search home and brand moments.
  */
 export function EchoMark({ size = 20, className }: { size?: number; className?: string }) {
   return (
@@ -16,7 +15,6 @@ export function EchoMark({ size = 20, className }: { size?: number; className?: 
       aria-hidden="true"
       draggable={false}
       className={clsx('shrink-0 select-none object-contain', className)}
-      style={{ borderRadius: Math.round(size * 0.22) }}
     />
   );
 }
