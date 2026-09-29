@@ -30,6 +30,7 @@ export const SETTING_KEYS = {
   // Phase 8 — UI Preferences
   themePreference: 'theme_preference',
   sidebarCollapsed: 'sidebar_collapsed',
+  onboardingCompleted: 'onboarding_completed',
 } as const;
 
 export type SettingKey = keyof typeof SETTING_KEYS;

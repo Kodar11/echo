@@ -33,6 +33,7 @@ const defaultSettings: AppSettings = {
   enableIntegrityCheckOnStartup: true,
   themePreference: 'system',
   sidebarCollapsed: false,
+  onboardingCompleted: false,
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

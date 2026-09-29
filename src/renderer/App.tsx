@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect } from 'react';
+import { useEffect, useLayoutEffect, useState } from 'react';
+import { Onboarding } from './components/onboarding/Onboarding.js';
 import { TitleBar } from './components/shell/TitleBar.js';
 import { Toaster } from './components/ui/Toaster.js';
 import { plural } from './lib/format.js';
@@ -114,8 +115,9 @@ async function onRunFinished(progress: IndexingProgress) {
   }
 }
 
-function useGlobalShortcuts() {
+function useGlobalShortcuts(enabled: boolean) {
   useEffect(() => {
+    if (!enabled) return;
     const handler = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
       if (!mod || e.altKey) return;
@@ -137,29 +139,48 @@ function useGlobalShortcuts() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, []);
+  }, [enabled]);
 }
+
+/**
+ * What the window shows: nothing until settings load (so the app never
+ * flashes before onboarding), then onboarding on first launch, else the app.
+ */
+type Surface = 'loading' | 'onboarding' | 'app';
 
 function App() {
   const page = useNavStore((s) => s.page);
   const loadSettings = useSettingsStore((s) => s.loadSettings);
+  const [surface, setSurface] = useState<Surface>('loading');
 
   useThemeSync();
   useIndexingLifecycle();
-  useGlobalShortcuts();
+  useGlobalShortcuts(surface === 'app');
 
   useEffect(() => {
-    void loadSettings();
+    loadSettings().then(
+      () => setSurface(useSettingsStore.getState().settings.onboardingCompleted ? 'app' : 'onboarding'),
+      // Never block the app on onboarding bookkeeping.
+      () => setSurface('app')
+    );
   }, [loadSettings]);
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden bg-canvas text-fg">
-      <TitleBar />
-      <main key={page} className="animate-fade-in relative min-h-0 flex-1">
-        {page === 'search' && <SearchPage />}
-        {page === 'library' && <LibraryPage />}
-        {page === 'settings' && <SettingsPage />}
-      </main>
+      {surface === 'onboarding' ? (
+        <Onboarding onDone={() => setSurface('app')} />
+      ) : surface === 'app' ? (
+        <>
+          <TitleBar />
+          <main key={page} className="animate-fade-in relative min-h-0 flex-1">
+            {page === 'search' && <SearchPage />}
+            {page === 'library' && <LibraryPage />}
+            {page === 'settings' && <SettingsPage />}
+          </main>
+        </>
+      ) : (
+        <div className="app-drag h-11 shrink-0" />
+      )}
       <Toaster />
     </div>
   );

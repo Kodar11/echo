@@ -687,6 +687,14 @@ export class IndexManager {
   setSidebarCollapsed(value: boolean): void {
     setBooleanSetting(SETTING_KEYS.sidebarCollapsed, value);
   }
+
+  getOnboardingCompleted(): boolean {
+    return getBooleanSetting(SETTING_KEYS.onboardingCompleted, false);
+  }
+
+  setOnboardingCompleted(value: boolean): void {
+    setBooleanSetting(SETTING_KEYS.onboardingCompleted, value);
+  }
 }
 
 function toProgress(state: IndexingState): IndexingProgressRecord {

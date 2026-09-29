@@ -32,6 +32,8 @@ test.beforeEach(async () => {
   });
   mainPage = await electronApp.firstWindow();
   await waitForPreloadScript();
+  // A fresh profile opens on first-launch onboarding (covered in onboarding.spec.ts).
+  await mainPage.getByRole('navigation', { name: 'Onboarding' }).getByRole('button', { name: 'Skip' }).click();
 });
 
 test.afterEach(async () => {

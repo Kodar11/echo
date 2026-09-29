@@ -230,6 +230,7 @@ type AppSettings = {
   enableIntegrityCheckOnStartup: boolean;
   themePreference: 'system' | 'light' | 'dark';
   sidebarCollapsed: boolean;
+  onboardingCompleted: boolean;
 };
 
 type EventPayloadInputMapping = {

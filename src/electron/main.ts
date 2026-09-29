@@ -393,6 +393,7 @@ function buildSettings(): AppSettings {
     enableIntegrityCheckOnStartup: indexManager.getEnableIntegrityCheckOnStartup(),
     themePreference: indexManager.getThemePreference(),
     sidebarCollapsed: indexManager.getSidebarCollapsed(),
+    onboardingCompleted: indexManager.getOnboardingCompleted(),
   };
 }
 
@@ -466,6 +467,9 @@ function applySetting(
       break;
     case 'sidebarCollapsed':
       indexManager.setSidebarCollapsed(Boolean(value));
+      break;
+    case 'onboardingCompleted':
+      indexManager.setOnboardingCompleted(Boolean(value));
       break;
   }
 }
